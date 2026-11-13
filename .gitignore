@@ -1,0 +1,6 @@
+node_modules/
+*.log
+_probe*.mjs
+_yamlcheck*
+.DS_Store
+memory/.lock/

@@ -1,0 +1,7 @@
+下面这段 Python 能跑、退出码 0、但什么也不输出。指出真正的根因，并给出一行修法。只回答根因和修法，不要重写整段代码。
+
+import os
+def main():
+    print("alive")
+if"__name__" == "__main__":
+    main()

@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "limits": {
+    "codebuddy": {
+      "dailyInputTokens": 600000,
+      "dailyCalls": 40
+    },
+    "trae": {
+      "dailyInputTokens": 0,
+      "dailyCalls": 60
+    }
+  },
+  "usage": {
+    "2026-11-13": {
+      "codebuddy": {
+        "calls": 5,
+        "input": 99742,
+        "output": 4825,
+        "fails": 0
+      },
+      "trae": {
+        "calls": 13,
+        "input": 0,
+        "output": 0,
+        "fails": 2
+      }
+    }
+  }
+}

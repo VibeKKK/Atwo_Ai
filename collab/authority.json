@@ -1,0 +1,82 @@
+{
+  "schema": "dsh-authority/v1",
+  "version": 3,
+  "updated": "2026-11-13T01:47+08:00",
+  "author": "用户 kkk（口头设定，可由他随时更改）",
+  "note": "rank1 与 rank2 共同掌管 rank3 及以下；rank3 随时可用，派活按双方工作量分摊。任何等级调整必须由用户发起并递增 version。",
+  "ranks": [
+    {
+      "rank": 1,
+      "role": "总管",
+      "id": "dsh-lead",
+      "workspace": "D:\\code app\\ai code\\Dssh\\dsh\\dsh workplace",
+      "powers": [
+        "接收用户指令并分解",
+        "向 rank 2 / 3 直接派活",
+        "验收任何交付物",
+        "决定是否需要升级给用户"
+      ]
+    },
+    {
+      "rank": 2,
+      "role": "副总管",
+      "id": "dsh-work-replace",
+      "workspace": "D:\\code app\\ai code\\Dssh\\dsh\\dsh work replace",
+      "powers": [
+        "执行 Orchestra 本体（派活 CLI / 适配器 / CDP 桥）",
+        "向 rank 3 直接派活",
+        "对 rank 1 的派活有异议时，可写 SHARED.md 说明，但先执行"
+      ]
+    },
+    {
+      "rank": 3,
+      "role": "执行层",
+      "id": "orchestra-agents",
+      "members": [
+        "trae",
+        "codebuddy",
+        "future-adapters"
+      ],
+      "powers": [
+        "只做被派给它的具体任务",
+        "不上报用户，不自行扩大范围",
+        "结果交回派活方"
+      ]
+    }
+  ],
+  "governance": {
+    "co_governors": [
+      "dsh-lead",
+      "dsh-work-replace"
+    ],
+    "governed": [
+      "orchestra-agents"
+    ],
+    "statement": "用户原话：『总之你们共同掌管其余 AI agent work』。rank1 与 rank2 共同掌管 rank3 及以下全部 agent。",
+    "rules": [
+      "对 rank3 的治理权是共有的，不是 rank1 单方面说了算，也不是 rank2 单方面说了算。",
+      "任何一方要给 rank3 派活，都可以直接派；但派活前若涉及对方正在跑的任务，先在 collab/mailbox 打招呼。",
+      "双方对同一个 rank3 任务给出冲突指令时：先停手，把两套要求写进 SHARED.md，互相看一遍；能达成一致就合并成一版再派。",
+      "合并不了的分歧，提交用户裁决，不自行升级对抗。",
+      "rank1 对 rank2 是『指令流上行』（用户 → rank1 → rank2），但这不改变双方对 rank3 的共同治理权。"
+    ],
+    "availability": {
+      "statement": "用户原话：『而且随时可用，依据你们的工作量』",
+      "rules": [
+        "rank3 随时可用：任意一方在我方手头无阻塞时，可以直接给它派活，不需要先问对方。",
+        "派活前先看负载看板（node collab.mjs load）：哪边忙、忙什么。",
+        "分摊原则：rank3 的任务优先给当前较闲的一方去派；较忙的一方不叠加新活。",
+        "两边都忙时，任务排队，先写进 SHARED.md 第 7 节队列，不抢占。",
+        "无论谁派的活，结果都回到派活方验收，再由派活方决定是否同步给对方。"
+      ],
+      "load_board": "collab/load.json（node collab.mjs load 查看 / load busy|idle|standby 登记，对端用 COLLAB_ME=dsh-work-replace 覆盖身份）"
+    }
+  },
+  "rules": [
+    "用户 > rank1 > rank2 > rank3（指令流方向）。rank1 与 rank2 对 rank3 为共同掌管。",
+    "rank 低的一方要改 rank 高的一方的文件，先在 collab/mailbox 打招呼并等答复。",
+    "rank 高的一方覆盖 rank 低的一方的决定时，必须在 SHARED.md 追加：改了什么、为什么。",
+    "等级不是能力评价，只是指令流与治理边界；rank 2 在 Orchestra 内部仍是最高负责人。",
+    "本条只是当前设定，用户随时可改；以本文件 version 最大者为准。"
+  ]
+}

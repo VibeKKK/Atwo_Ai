@@ -1,0 +1,15 @@
+{
+  "updated": "2026-11-12T16:48:36.002Z",
+  "agents": {
+    "dsh-lead": {
+      "state": "standby",
+      "current": "待命，等用户下一步；CodeBuddy 已验证可用",
+      "since": "2026-11-12T16:48:12.697Z"
+    },
+    "dsh-work-replace": {
+      "state": "busy",
+      "current": "实战演示：优化orchestra+派活给rank3",
+      "since": "2026-11-12T16:48:36.001Z"
+    }
+  }
+}

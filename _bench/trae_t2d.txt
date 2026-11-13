@@ -1,0 +1,39 @@
+Python
+
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+
+import os
+
+def top_lnk(root, n):
+    if n <= 0:
+        return []
+    found = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        for name in filenames:
+            if not name.lower().endswith('.lnk'):
+                continue
+            path = os.path.join(dirpath, name)
+            try:
+                size = os.stat(path).st_size
+            except OSError:
+                continue
+            found.append((path, size))
+    found.sort(key=lambda item: item[1], reverse=True)
+    return found[:n]
