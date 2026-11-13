@@ -659,11 +659,22 @@ try {
     if (!gate.ok) { console.error('EBUDGET ' + gate.reason); process.exit(3); }
     let raw = '';
     let ok = true;
+    let usageIn = 0, usageOut = 0;
     try {
-      raw = String(await withLockPool(agentName, 1, () => withTimeout(
+      // 适配层的 ask() 返回对象 {ok,addedText,usage}，不是字符串。
+      // 早期这里直接 String(...) → "[object Object]" → 整批解析降级成 fallback。
+      const res = await withLockPool(agentName, 1, () => withTimeout(
         () => ag.ask(prompt, { timeoutMs: TASK_TIMEOUT_MS }),
         TASK_TIMEOUT_MS + 20000, agentName,
-      ), { onWait: () => console.error('[队列] ' + agentName + ' 正忙，排队等待…') }) || '');
+      ), { onWait: () => console.error('[队列] ' + agentName + ' 正忙，排队等待…') });
+      if (typeof res === 'string') {
+        raw = res;
+      } else if (res && typeof res === 'object') {
+        raw = String(res.addedText ?? res.text ?? '');
+        usageIn = Number((res.usage && (res.usage.in ?? res.usage.input_tokens)) || 0);
+        usageOut = Number((res.usage && (res.usage.out ?? res.usage.output_tokens)) || 0);
+      }
+      if (res && typeof res === 'object' && res.ok === false) ok = false;
     } catch (e) {
       ok = false; raw = '';
       console.error('EAGENTFAIL ' + (e && e.message ? e.message : e));
@@ -684,7 +695,7 @@ try {
     const missing = tasks.length - items.filter((it) => (it.code || it.answer || '').trim()).length;
     if (missing > 0) console.log(`[batch] 注意：${missing} 项没拿到内容，可重派或缩小任务粒度`);
     try {
-      budgetRecord(agentName, { input: B, output: Math.ceil(raw.length / 4), ok });
+      budgetRecord(agentName, { input: usageIn || B, output: usageOut || Math.ceil(raw.length / 4), ok });
       appendLog({
         at: new Date().toISOString(), kind: 'batch', agent: agentName, ok,
         promptSummary: `[batch ${tasks.length} 项] ` + String(tasks[0]).slice(0, 40),
