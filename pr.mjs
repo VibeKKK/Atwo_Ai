@@ -17,7 +17,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { ROOT, isRepo, ensureRepo, hasCommit, headSha, currentBranch, branchExists, isDirty, changedFiles, commit, checkout, createBranch, mergeNoFf, deleteBranch, revertCommit, diffStat, diffText, changedBetween, logOneline } from './lib/vcs.mjs';
+import { ROOT, isRepo, ensureRepo, hasCommit, headSha, currentBranch, branchExists, isDirty, changedFiles, commit, commitPaths, checkout, createBranch, mergeNoFf, deleteBranch, revertCommit, diffStat, diffText, changedBetween, logOneline } from './lib/vcs.mjs';
 
 // 账本放 gitignore 的隐藏文件：PR 流程自己反复改写它，一旦被跟踪就会在每次操作后
 // 把工作区弄脏，进而被自己的写入拦住（踩过一次）。对外可读审计写 memory/PR_LOG.md。
@@ -50,6 +50,9 @@ function audit(line) {
     if (!fs.existsSync(AUDIT_FILE)) fs.writeFileSync(AUDIT_FILE, AUDIT_HEADER, 'utf8');
     const stamp = new Date().toISOString().slice(0, 19).replace('T', ' ');
     fs.appendFileSync(AUDIT_FILE, '- ' + stamp + '  ' + line + '\n', 'utf8');
+    // 审计本身也要进历史，但绝不能把工作区留脏——否则下一次 approve/undo
+    // 会被自己的写入拦住（踩过一次）。这里只提交这一个文件。
+    try { commitPaths('docs(pr): 审计 ' + line.split('`')[1] || '状态变化', ['memory/PR_LOG.md']); } catch { }
   } catch { /* 审计写失败不影响主流程 */ }
 }
 
