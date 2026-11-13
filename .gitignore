@@ -5,3 +5,4 @@ _yamlcheck*
 .DS_Store
 memory/.lock/
 memory/.prs.json
+memory/PR_LOG.md

@@ -17,7 +17,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { ROOT, isRepo, ensureRepo, hasCommit, headSha, currentBranch, branchExists, isDirty, changedFiles, commit, commitPaths, checkout, createBranch, mergeNoFf, deleteBranch, revertCommit, diffStat, diffText, changedBetween, logOneline } from './lib/vcs.mjs';
+import { ROOT, isRepo, ensureRepo, hasCommit, headSha, currentBranch, branchExists, isDirty, changedFiles, commit, checkout, createBranch, mergeNoFf, deleteBranch, revertCommit, diffStat, diffText, changedBetween, logOneline } from './lib/vcs.mjs';
 
 // 账本放 gitignore 的隐藏文件：PR 流程自己反复改写它，一旦被跟踪就会在每次操作后
 // 把工作区弄脏，进而被自己的写入拦住（踩过一次）。对外可读审计写 memory/PR_LOG.md。
@@ -44,15 +44,22 @@ function saveState(s) {
 
 const AUDIT_HEADER = ['# PR 审计日志', '', '每次状态变化追加一行。反查：git log -- memory/PR_LOG.md', '', ''].join('\n');
 
+/**
+ * 审计日志**不进 git**（已 gitignore）。
+ *
+ * 踩过的坑：每条审计都提交进历史，结果提案分支和主干各自 append 同一个文件，
+ * 合并时必然 add/add 冲突，`pr approve` 直接失败。append-only 日志天生不适合
+ * 跨分支合并。
+ *
+ * 分工：git 历史用 commit message 承载（`feat(pr-<id>): …` / `merge: PR-…` /
+ * `revert: PR-…`，`git log --grep PR-2026` 就能反查）；这份文件只给人现场看。
+ */
 function audit(line) {
   try {
     fs.mkdirSync(path.dirname(AUDIT_FILE), { recursive: true });
     if (!fs.existsSync(AUDIT_FILE)) fs.writeFileSync(AUDIT_FILE, AUDIT_HEADER, 'utf8');
     const stamp = new Date().toISOString().slice(0, 19).replace('T', ' ');
     fs.appendFileSync(AUDIT_FILE, '- ' + stamp + '  ' + line + '\n', 'utf8');
-    // 审计本身也要进历史，但绝不能把工作区留脏——否则下一次 approve/undo
-    // 会被自己的写入拦住（踩过一次）。这里只提交这一个文件。
-    try { commitPaths('docs(pr): 审计 ' + (line.split('`')[1] || '状态变化'), ['memory/PR_LOG.md']); } catch { }
   } catch { /* 审计写失败不影响主流程 */ }
 }
 
@@ -152,7 +159,7 @@ export function finish(id, opts = {}) {
   if (cur !== pr.branch) {
     throw new Error('当前在 ' + cur + '，但提案 ' + pr.id + ' 的分支是 ' + pr.branch + '。先切过去：git checkout ' + pr.branch);
   }
-  const msg = opts.message || ('feat(' + (pr.agent || 'agent') + '): ' + pr.title);
+  const msg = opts.message || ('feat(pr-' + pr.id + '): ' + pr.title);
   const r = commit(msg);
   pr.headSha = r.sha;
   pr.files = changedBetween(pr.baseSha, pr.branch).filter((f) => !META_RE.test(f.file));
@@ -185,7 +192,6 @@ export function approve(id, opts = {}) {
   pr.approvedBy = opts.by || 'rank1';
   saveState(s);
   audit('`' + pr.id + '` merged    ' + (mergeSha ? mergeSha.slice(0, 8) : ''));
-  try { commit('docs(pr): 记录 ' + pr.id + ' 合并'); } catch { }
   return pr;
 }
 
@@ -220,7 +226,6 @@ export function undo(id) {
   pr.revertedAt = new Date().toISOString();
   saveState(s);
   audit('`' + pr.id + '` reverted  ' + (sha ? sha.slice(0, 8) : ''));
-  try { commit('docs(pr): 记录 ' + pr.id + ' 撤回'); } catch { }
   return pr;
 }
 
