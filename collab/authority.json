@@ -125,6 +125,7 @@
       "rank1 有权覆盖 rank2 的判断，但必须在 review 的 --note 里写清原因",
       "审阅只记意见不自动合并：合并仍是显式动作（pr approve）",
       "谁审谁签字：review 记录里带 by/verdict/risk/时间，写进 memory/PR_LOG.md 审计"
-    ]
+    ],
+    "dev_note": "review gate 测试"
   }
 }
