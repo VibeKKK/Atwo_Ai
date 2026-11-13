@@ -23,6 +23,7 @@ import { brief as projectBrief } from './lib/project-memory.mjs';
 import { JSON_CONTRACT, PROSE_CONTRACT, parseContract, renderContract, fallbackCode, isCodeTask } from './lib/contract.mjs';
 import { withLock, withTimeout, listLocks } from './lib/lock.mjs';
 import { check as budgetCheck, record as budgetRecord, report as budgetReport, usedToday } from './lib/budget.mjs';
+import { start as prStart, finish as prFinish } from './pr.mjs';
 
 const TASK_TIMEOUT_MS = Number(process.env.ORCH_TIMEOUT_MS || 240000);
 const EST_INPUT = { codebuddy: 24848, trae: 0 };
@@ -226,6 +227,20 @@ async function dispatch(kindLabel, rawPrompt, extra = {}) {
   const t0 = Date.now();
   let r = null, err = null, contract = null, retried = false;
 
+  // PR 模式（ORCH_PR=1）：每次派活开一个提案分支，干完形成 ready 提案。
+  // 主干永远不受 agent 直接改动 —— 这就是「改动可回退」的全部意义。
+  // 默认关闭，因为 PR 需要干净工作区；调用方显式打开才接管分支。
+  const usePR = process.env.ORCH_PR === '1';
+  let pr = null;
+  if (usePR) {
+    try {
+      pr = prStart(extra.prTitle || rawPrompt.replace(/\s+/g, ' ').slice(0, 60));
+      console.error(`[PR] 开提案 ${pr.id}  分支 ${pr.branch}`);
+    } catch (e) {
+      console.error(`[PR] 开提案失败，退回普通模式：${e.message}`);
+    }
+  }
+
   const runOnce = (p) => withLock(name, () => withTimeout(
     () => ag.ask(p, { timeoutMs: TASK_TIMEOUT_MS }),
     TASK_TIMEOUT_MS + 20000, name
@@ -273,6 +288,22 @@ async function dispatch(kindLabel, rawPrompt, extra = {}) {
   if (r && r.usage) entry.usage = r.usage;
   if (wantContract) entry.contract = contract ? (contract.ok ? 'ok' : contract.reason) : 'skipped';
   if (retried) entry.retried = true;
+  if (pr) entry.pr = pr.id;
+
+  // 提案收口：把 agent 写出的文件提交到提案分支，形成一个 ready 提案。
+  // 合并与否是人的决定（orchestra_pr approve），这里只负责把它摆出来。
+  if (pr) {
+    try {
+      const fin = prFinish(pr.id, { message: `feat(pr-${pr.id}): ${entry.promptSummary}` });
+      entry.prStatus = fin.status;
+      entry.prFiles = fin.files.length;
+      console.error(`[PR] ${fin.id} ${fin.status}  文件 ${fin.files.length} 个` + (fin.files.length ? '：' + fin.files.map((f) => f.file).slice(0, 5).join(', ') : ''));
+    } catch (e) {
+      entry.prStatus = 'finish-failed';
+      console.error(`[PR] 收口失败：${e.message}`);
+    }
+  }
+
   appendLog(entry);
   try { setLastJob(entry); } catch { }
 
