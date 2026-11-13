@@ -198,19 +198,142 @@ function settleWorkspace() {
   return dirty;
 }
 
-/** 合并回主干 */
+// ---------------------------------------------------------------- 审阅门（rank1/rank2 共管）
+//
+// 用户令：这个过程可以由总管的 AI 和副总管的 AI 监管一部分责任。
+// 所以批准权不是一个人说了算，而是按「改动风险」分级：
+//   docs 级（只动文档/记忆）→ rank2 审过就能合
+//   code 级（动代码）        → 必须 rank1 审过
+//   protected（治理文件）     → 必须 rank1 审过，且 rank2 必须知情（写进记录）
+// rank1 追认规则：rank2 已审的 code 提案，rank1 一条 review 即可放行。
+const POLICY_FILE = path.join(ROOT, 'collab', 'authority.json');
+
+const DEFAULT_POLICY = {
+  required_reviews: { docs: 1, code: 1, protected: 1 },
+  reviewers: { docs: ['rank2', 'rank1'], code: ['rank1'], protected: ['rank1'] },
+  must_be_informed: { protected: ['rank2'] },
+  protected_paths: ['collab/authority.json', 'collab/SHARED.md', 'pr.mjs', 'lib/vcs.mjs', 'orchestra.mjs', 'package.json', 'cordis.patch.yml'],
+  docs_prefixes: ['collab/', 'memory/', 'docs/', 'README'],
+};
+
+function loadPolicy() {
+  try {
+    const a = JSON.parse(fs.readFileSync(POLICY_FILE, 'utf8'));
+    const p = a && a.pr_policy;
+    if (!p) return DEFAULT_POLICY;
+    return {
+      required_reviews: { ...DEFAULT_POLICY.required_reviews, ...(p.required_reviews || {}) },
+      reviewers: { ...DEFAULT_POLICY.reviewers, ...(p.reviewers || {}) },
+      must_be_informed: { ...DEFAULT_POLICY.must_be_informed, ...(p.must_be_informed || {}) },
+      protected_paths: p.protected_paths || DEFAULT_POLICY.protected_paths,
+      docs_prefixes: p.docs_prefixes || DEFAULT_POLICY.docs_prefixes,
+    };
+  } catch {
+    return DEFAULT_POLICY;
+  }
+}
+
+const normWho = (w) => String(w || '').trim().toLowerCase();
+const asRank = (w) => {
+  const v = normWho(w);
+  if (['rank1', 'dsh-lead', 'lead', '总管', '1'].includes(v)) return 'rank1';
+  if (['rank2', 'dsh-work-replace', 'work-replace', '副总管', '2'].includes(v)) return 'rank2';
+  return v;
+};
+
+/** 按改动文件判风险等级 */
+function classify(files) {
+  const pol = loadPolicy();
+  const list = (files || []).map((f) => (typeof f === 'string' ? f : f.file));
+  if (!list.length) return 'docs';
+  if (list.some((f) => pol.protected_paths.includes(f))) return 'protected';
+  const allDocs = list.every((f) => pol.docs_prefixes.some((p) => f.startsWith(p)));
+  return allDocs ? 'docs' : 'code';
+}
+
+/** 该提案还需要谁审 */
+function reviewGate(pr) {
+  const pol = loadPolicy();
+  const risk = classify(pr.files);
+  const allowed = pol.reviewers[risk] || pol.reviewers.code;
+  const reviews = (pr.reviews || []).filter((r) => r.verdict === 'approve');
+  const done = reviews.map((r) => asRank(r.by));
+  const satisfiedBy = done.find((r) => allowed.includes(r));
+  const informed = pol.must_be_informed[risk] || [];
+  const informedBy = (pr.reviews || []).map((r) => asRank(r.by));
+  const missingInformed = informed.filter((w) => !informedBy.includes(w));
+  return {
+    risk,
+    allowed,
+    satisfied: !!satisfiedBy,
+    satisfiedBy: satisfiedBy || null,
+    needInformed: informed,
+    missingInformed,
+  };
+}
+
+/** 记一条审阅意见（只记，不做决定） */
+export function review(id, opts = {}) {
+  const s = loadState();
+  const pr = mustGet(s, id);
+  if (pr.status === 'merged' || pr.status === 'reverted') {
+    throw new Error(pr.id + ' 已经是 ' + pr.status + ' 状态，不能再审');
+  }
+  const by = asRank(opts.by);
+  if (!by) throw new Error('review 需要说明是谁审的：--by rank1 | rank2');
+  const verdict = opts.verdict === 'reject' ? 'reject' : 'approve';
+  const pol = loadPolicy();
+  const risk = classify(pr.files);
+  const allowed = pol.reviewers[risk] || [];
+  if (!allowed.includes(by)) {
+    throw new Error(risk + ' 级提案的审阅人应是 ' + allowed.join(' / ') + '，你是 ' + by
+      + '。要么找对的人审，要么先升级策略（collab/authority.json 的 pr_policy）');
+  }
+  pr.reviews = pr.reviews || [];
+  pr.reviews.push({
+    by,
+    verdict,
+    note: String(opts.note || ''),
+    risk,
+    at: new Date().toISOString(),
+  });
+  saveState(s);
+  audit('`' + pr.id + '` review    ' + by + ' ' + verdict + (opts.note ? '  ' + opts.note : ''));
+  return { ...pr, gate: reviewGate(pr) };
+}
+
+/** 待审队列（给两位总管看） */
+export function pending() {
+  const s = loadState();
+  return Object.values(s.prs)
+    .filter((p) => p.status === 'ready')
+    .map((p) => ({ ...p, gate: reviewGate(p) }));
+}
+
+
+/** 合并回主干（受审阅门约束） */
 export function approve(id, opts = {}) {
   const s = loadState();
   const pr = mustGet(s, id);
   if (pr.status === 'merged') return pr;
   if (!['ready', 'open'].includes(pr.status)) throw new Error('提案 ' + id + ' 状态是 ' + pr.status + '，不能合并');
+
+  // 审阅门：先看风险等级、再看谁签过字
+  const gate = reviewGate(pr);
+  if (!gate.satisfied) {
+    throw new Error(
+      '提案 ' + pr.id + ' 是 ' + gate.risk + ' 级，需要 ' + gate.allowed.join(' 或 ') + ' 审阅后才能合并。\n'
+      + '  当前已有审阅：' + ((pr.reviews || []).map((r) => asRank(r.by) + ':' + r.verdict).join(', ') || '无') + '\n'
+      + '  先跑：node pr.mjs review ' + pr.id + ' --by ' + gate.allowed[0] + ' --note "审阅意见"'
+    );
+  }
   settleWorkspace();
   checkout(MAIN);
   const mergeSha = mergeNoFf(pr.branch, 'merge: ' + pr.id + ' ' + pr.title);
   pr.status = 'merged';
   pr.mergeSha = mergeSha;
   pr.approvedAt = new Date().toISOString();
-  pr.approvedBy = opts.by || 'rank1';
+  pr.approvedBy = gate.satisfiedBy || opts.by || 'rank1';
   saveState(s);
   audit('`' + pr.id + '` merged    ' + (mergeSha ? mergeSha.slice(0, 8) : ''));
   return pr;
@@ -295,6 +418,9 @@ function main() {
   pr approve <id>              合并回 main
   pr reject <id> [原因]         丢弃提案
   pr undo <id>                 撤回已合并的提案（反向提交）
+  pr review <id> --by rank1|rank2 [--note "意见"] [--reject]
+                               记一条审阅（docs 级 rank2 可放行；code/protected 需 rank1）
+  pr pending                   待审队列：风险等级 + 还缺谁签字
   pr status                    仓库状态 / 未决提案`);
     process.exit(0);
   }
@@ -328,6 +454,40 @@ function main() {
     if (pr.files && pr.files.length) console.log('文件：' + pr.files.map((f) => f.status + ' ' + f.file).join(', '));
     if (log.length) console.log('提交：\n  ' + log.join('\n  '));
     console.log('\n' + (diff || '(无 diff)'));
+    return;
+  }
+  if (cmd === 'review') {
+    const id = rest[0];
+    if (!id) { console.error('要给提案号'); process.exit(2); }
+    const opt = { by: '', verdict: 'approve', note: '' };
+    for (let i = 1; i < rest.length; i++) {
+      const a = rest[i];
+      if (a === '--by') opt.by = rest[++i] || '';
+      else if (a === '--reject') opt.verdict = 'reject';
+      else if (a === '--note') opt.note = rest[++i] || '';
+      else if (!opt.note) opt.note = a;
+    }
+    const r = review(id, opt);
+    const g = r.gate;
+    console.log(`${r.id} 已记录审阅：${asRank(opt.by)} ${opt.verdict}  风险=${g.risk}`);
+    console.log(g.satisfied
+      ? `  可以合并（${g.satisfiedBy} 已放行）`
+      : `  还不能合并，需要 ${g.allowed.join(' 或 ')}`);
+    if (g.missingInformed.length) console.log(`  还需知情：${g.missingInformed.join(', ')}`);
+    return;
+  }
+  if (cmd === 'pending') {
+    const rows = pending();
+    if (!rows.length) { console.log('没有待审提案'); return; }
+    console.log('待审提案：');
+    rows.forEach((p) => {
+      const g = p.gate;
+      const who = g.satisfied ? `已满足（${g.satisfiedBy}）` : `需 ${g.allowed.join('/')}`;
+      const rv = (p.reviews || []).map((r) => asRank(r.by) + ':' + r.verdict).join(', ') || '无';
+      console.log(`  ${p.id}  ${g.risk.padEnd(9)}  ${who.padEnd(18)}  审阅:${rv}`);
+      console.log(`      ${p.title}`);
+      if (p.files.length) console.log('      ' + p.files.slice(0, 6).map((f) => f.file).join(', ') + (p.files.length > 6 ? ` …共 ${p.files.length} 个` : ''));
+    });
     return;
   }
   if (cmd === 'approve') {

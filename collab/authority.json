@@ -1,7 +1,7 @@
 {
   "schema": "dsh-authority/v1",
-  "version": 3,
-  "updated": "2026-11-13T01:47+08:00",
+  "version": 4,
+  "updated": "2026-11-13T16:55+08:00",
   "author": "用户 kkk（口头设定，可由他随时更改）",
   "note": "rank1 与 rank2 共同掌管 rank3 及以下；rank3 随时可用，派活按双方工作量分摊。任何等级调整必须由用户发起并递增 version。",
   "ranks": [
@@ -78,5 +78,53 @@
     "rank 高的一方覆盖 rank 低的一方的决定时，必须在 SHARED.md 追加：改了什么、为什么。",
     "等级不是能力评价，只是指令流与治理边界；rank 2 在 Orchestra 内部仍是最高负责人。",
     "本条只是当前设定，用户随时可改；以本文件 version 最大者为准。"
-  ]
+  ],
+  "pr_policy": {
+    "note": "提案（PR）审阅责任分摊：rank1 总管 + rank2 副总管共管，按改动风险分级。改动只由用户发起，改后 version 递增。",
+    "required_reviews": {
+      "docs": 1,
+      "code": 1,
+      "protected": 1
+    },
+    "reviewers": {
+      "docs": [
+        "rank2",
+        "rank1"
+      ],
+      "code": [
+        "rank1"
+      ],
+      "protected": [
+        "rank1"
+      ]
+    },
+    "must_be_informed": {
+      "protected": [
+        "rank2"
+      ]
+    },
+    "protected_paths": [
+      "collab/authority.json",
+      "collab/SHARED.md",
+      "pr.mjs",
+      "lib/vcs.mjs",
+      "orchestra.mjs",
+      "package.json",
+      "cordis.patch.yml"
+    ],
+    "docs_prefixes": [
+      "collab/",
+      "memory/",
+      "docs/",
+      "README"
+    ],
+    "rules": [
+      "docs 级（只动文档/记忆）→ rank2 审过即可合并，不必等 rank1",
+      "code 级（动代码）→ 必须 rank1 审过；rank2 可预先 review 留意见，但不能放行",
+      "protected 级（治理文件：authority/SHARED/PR 引擎/插件清单）→ rank1 审过，且 rank2 必须知情",
+      "rank1 有权覆盖 rank2 的判断，但必须在 review 的 --note 里写清原因",
+      "审阅只记意见不自动合并：合并仍是显式动作（pr approve）",
+      "谁审谁签字：review 记录里带 by/verdict/risk/时间，写进 memory/PR_LOG.md 审计"
+    ]
+  }
 }
