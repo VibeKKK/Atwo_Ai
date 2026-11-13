@@ -15,13 +15,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
+import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { askTrae, peekTrae, meta as traeMeta } from './agents/trae.mjs';
 import { askCodeBuddy, peekCodeBuddy, meta as cbMeta } from './agents/codebuddy.mjs';
 import { readState, writeState, appendLog, readLog, setLastJob, buildContext } from './lib/memory.mjs';
 import { brief as projectBrief } from './lib/project-memory.mjs';
 import { JSON_CONTRACT, PROSE_CONTRACT, parseContract, renderContract, fallbackCode, isCodeTask } from './lib/contract.mjs';
-import { withLock, withTimeout, listLocks } from './lib/lock.mjs';
+import { withLock, withLockPool, withTimeout, listLocks } from './lib/lock.mjs';
 import { check as budgetCheck, record as budgetRecord, report as budgetReport, usedToday } from './lib/budget.mjs';
 import { start as prStart, finish as prFinish } from './pr.mjs';
 import { loadTasks, buildBatchPrompt, splitResults } from './lib/batch.mjs';
@@ -185,7 +186,8 @@ if (cmd === 'memory') {
     process.exit(0);
   }
 
-const needsAgent = cmd !== 'duo' && cmd !== 'stats' && cmd !== 'auto' && cmd !== 'pick';
+const NO_AGENT_CMDS = ['duo','stats','auto','pick','doctor','probe','budget','health','list'];
+const needsAgent = !NO_AGENT_CMDS.includes(cmd);
 let agent = REGISTRY[who];
 let effectiveWho = who;
 let autoWhy = '';
@@ -258,11 +260,14 @@ async function dispatch(kindLabel, rawPrompt, extra = {}) {
     }
   }
 
-  const runOnce = (p) => withLock(name, () => withTimeout(
+  // 锁池：trae 恒为 1 路（只有一个 Agent 页面，并发会互相污染回答）；
+  // codebuddy 是独立 CLI 进程，可以开多路，否则等于自废吞吐。
+  const slots = Number(process.env['ORCH_SLOTS_' + name] || (name === 'codebuddy' ? 2 : 1)) || 1;
+  const runOnce = (p) => withLockPool(name, slots, () => withTimeout(
     () => ag.ask(p, { timeoutMs: TASK_TIMEOUT_MS }),
     TASK_TIMEOUT_MS + 20000, name
   ), {
-    onWait: (info) => console.error(`[队列] ${name} 正忙（pid=${info.held && info.held.pid}），排队等待…`),
+    onWait: (n) => console.error(`[队列] ${name} 的 ${n} 路都占满，排队等待…`),
   });
 
   try {
@@ -444,6 +449,83 @@ try {
   }
 
 
+  // ---- doctor：这台机器缺什么，一次说清 ----
+  if (cmd === 'doctor') {
+    const cfgMod = await import('./lib/config.mjs');
+    const cfg = cfgMod.config;
+    const src = cfgMod.configSources();
+    const ok = (b) => (b ? '✓' : '✗');
+    const line = (mark, label, detail) => console.log(`  ${mark} ${String(label).padEnd(16)} ${detail || ''}`);
+    console.log('这台机器能不能跑 Orchestra：\n');
+
+    line(ok(Number(process.versions.node.split('.')[0]) >= 18), 'node', 'v' + process.versions.node);
+    let gitVer = '';
+    try { gitVer = execSync('git --version', { encoding: 'utf8', windowsHide: true }).trim(); } catch { }
+    line(ok(!!gitVer), 'git', gitVer || '找不到 git（PR 流程不可用）');
+
+    const exeOk = fs.existsSync(cfg.traeExe);
+    line(ok(exeOk), 'Trae 可执行文件', exeOk ? cfg.traeExe : `不存在：${cfg.traeExe}\n      → 设 TRAE_EXE 或写进 ${cfg.localFile}（当前来源：${src.traeExe}）`);
+
+    const portOk = await new Promise((res) => {
+      const s = net.connect(cfg.traePort, '127.0.0.1');
+      const done = (v) => { s.destroy(); res(v); };
+      s.setTimeout(900, () => done(false));
+      s.on('connect', () => done(true));
+      s.on('error', () => done(false));
+    });
+    line(portOk ? '✓' : '·', 'Trae 调试端口', portOk ? `${cfg.traePort} 在监听` : `${cfg.traePort} 没监听（派活时会自动拉起 Trae，属正常）`);
+
+    const cbOk = fs.existsSync(cfg.codebuddyCli);
+    line(ok(cbOk), 'codebuddy CLI', cbOk ? cfg.codebuddyCli : `不存在：${cfg.codebuddyCli}（当前来源：${src.codebuddyCli}）`);
+
+    let dirty = '';
+    try { dirty = execSync('git status --porcelain', { encoding: 'utf8', windowsHide: true }).trim(); } catch { }
+    line(!dirty ? '✓' : '·', '仓库', !dirty ? '工作区干净' : `有 ${dirty.split('\n').length} 处未提交改动`);
+
+    line(cfg.hasLocal ? '✓' : '·', '本机配置', cfg.hasLocal ? cfg.localFile : `还没建（node orchestra.mjs doctor --init 生成模板）`);
+    console.log('');
+    console.log(!gitVer || !exeOk || !cbOk ? '结论：有硬缺口（带 ✗ 的项修好才能派活）' : '结论：可以正常派活');
+    if (process.argv.includes('--init')) {
+      const r = cfgMod.writeLocalTemplate(process.argv.includes('--force'));
+      console.log(r.ok ? '已生成 ' + r.file : '未生成：' + r.reason);
+    }
+    process.exit(0);
+  }
+
+  // ---- probe：适配层还认不认得当前界面（不派活、不花 token）----
+  if (cmd === 'probe') {
+    const cfg = (await import('./lib/config.mjs')).config;
+    console.log('[probe] 检查 Trae 适配层是否仍然对得上（不派任务、不消耗额度）\n');
+    const portOk = await new Promise((res) => {
+      const s = net.connect(cfg.traePort, '127.0.0.1');
+      const done = (v) => { s.destroy(); res(v); };
+      s.setTimeout(900, () => done(false));
+      s.on('connect', () => done(true));
+      s.on('error', () => done(false));
+    });
+    console.log(`  ${portOk ? '✓' : '✗'} CDP 端口 ${cfg.traePort}  ${portOk ? '在监听' : '没监听'}`);
+    if (!portOk) {
+      console.log('\n  结论：Trae 没开，页面探不了。先跑一次 ask trae 让它起来，再 probe。');
+      process.exit(0);
+    }
+    try {
+      const txt = String(await peekTrae({ port: cfg.traePort }) || '');
+      const hasInput = /添加上下文|完全访问|发送|正常模式|deepseek/i.test(txt);
+      const hasTurn = /TRAE|由 AI 生成|思考过程/.test(txt);
+      console.log(`  ${txt.length > 20 ? '✓' : '✗'} 页面文本可取  ${txt.length} 字符`);
+      console.log(`  ${hasInput ? '✓' : '✗'} 输入区特征词  ${hasInput ? '界面结构没大变' : '界面可能改了 —— 适配层需更新'}`);
+      console.log(`  ${hasTurn ? '✓' : '·'} 对话区标记    ${hasTurn ? '' : '还没有任何回合，属正常'}`);
+      console.log('');
+      console.log(txt.length > 20 && hasInput
+        ? '  结论：适配层对得上，可以正常派活'
+        : '  结论：对不上，需更新选择器。先跑 node test/selftest.mjs 确认纯函数层仍正确');
+    } catch (e) {
+      console.log('  ✗ peek 失败：' + (e && e.message ? e.message : e));
+      console.log('\n  结论：连不上 Agent 面板。可能端口被别的窗口占了，或 Trae 刚起来还没建好页面。');
+    }
+    process.exit(0);
+  }
+
   // ---- batch：把 N 个小任务压进一次调用，摊薄固定开销 ----
   // codebuddy 每次固定吃 ~24,800 input token（CLI 自带 system prompt），
   // 5 个任务分 5 次 = 12.4 万；压成 1 次 = 2.5 万。这是最直接的省钱手段。
@@ -465,7 +547,7 @@ try {
     let raw = '';
     let ok = true;
     try {
-      raw = String(await withLock(agentName, () => withTimeout(
+      raw = String(await withLockPool(agentName, 1, () => withTimeout(
         () => ag.ask(prompt, { timeoutMs: TASK_TIMEOUT_MS }),
         TASK_TIMEOUT_MS + 20000, agentName,
       ), { onWait: () => console.error('[队列] ' + agentName + ' 正忙，排队等待…') }) || '');

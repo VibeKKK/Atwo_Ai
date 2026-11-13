@@ -307,9 +307,11 @@ export async function askTrae(prompt, opts = {}) {
     if (!sent) throw new Error('回车没发出去，输入框还留着文字');
 
     // 2) 等它干完
-    // 判据只能看「回合数增长 + 内容稳定」。不能拿"busy 变 false"当完成信号——
-    // 实测（2026-11-13）：Trae 先 busy 约 2 秒表示已收到，然后 busy 归 false 出现空档，
-    // 真正的内容是之后才流进来的。早期版本在 busy 一掉就收工，于是把"还没来"误判成"没回答"。
+    // 判据只能看「最后一条助手回合的文本变了 + 内容稳定」。
+    // 两个都不能用的旧信号：
+    //   · busy 变 false —— 实测先 busy ~2 秒表示收到，然后空档，内容之后才流进来；
+    //   · 回合数增长 —— Trae 的会话列表是**虚拟化**的，DOM 里只保留最近约 5 条，
+    //     回合数到 5 就不再涨（实测卡在 turns=5(base 5)），此时回答其实已经到了。
     const DEBUG = process.env.ORCH_DEBUG_TRAE === '1';
     const HARD_TIMEOUT = timeoutMs;
     let lastText = '', stableSince = Date.now(), sawBusy = false, finished = false;
@@ -317,12 +319,11 @@ export async function askTrae(prompt, opts = {}) {
       await sleep(700);
       const ans = await readAnswers(c);
       const busy = await isBusy(c);
-      const grew = ans.turns > baseAns.turns;
-      const hasText = ans.text.length > 0;
-      if (DEBUG) console.error(`[poll ${((Date.now() - t0) / 1000).toFixed(1)}s] busy=${busy} turns=${ans.turns}(base ${baseAns.turns}) len=${ans.text.length} grew=${grew}`);
+      const changed = !!ans.text && ans.text !== baseAns.text;
+      if (DEBUG) console.error(`[poll ${((Date.now() - t0) / 1000).toFixed(1)}s] busy=${busy} turns=${ans.turns}(base ${baseAns.turns}) len=${ans.text.length} changed=${changed}`);
       if (busy) sawBusy = true;
 
-      if (grew && hasText) {
+      if (changed) {
         if (ans.text !== lastText) {
           lastText = ans.text;
           stableSince = Date.now();
@@ -338,8 +339,9 @@ export async function askTrae(prompt, opts = {}) {
 
     // 3) 取结果：容器法优先（干净），失败才退回页面文本 diff
     const ans = await readAnswers(c);
+    const changedNow = !!ans.text && ans.text !== baseAns.text;
     let added, source;
-    if (ans.turns > baseAns.turns && ans.text) {
+    if (changedNow) {
       added = cleanCodeChrome(extractReply(ans.text));
       source = 'container';
     } else {
@@ -377,16 +379,39 @@ export async function askTrae(prompt, opts = {}) {
   }
 }
 
+// ---- 选择器集中：界面一改只动这一处 ----
+// 每个键给一组候选，按顺序试，第一个命中的算数（降级链）。
+// 为什么要降级链：Trae 改版时类名会变，但结构不会一次全变；
+// 给出多个候选比单点硬编码多活几轮，且 probe 能提前报警。
+export const SEL = {
+  // 助手回合容器
+  turn: ['div.turn__agent-message', '[class*="turn__agent-message"]', '[data-testid*="agent-message"]'],
+  // 回合内的 markdown 渲染容器（答案取最后一个）
+  renderer: ['div.markdown-renderer', '[class*="markdown-renderer"]', '[class*="markdown-body"]'],
+  // 输入框（可编辑区）
+  edit: ['div[contenteditable="true"]', '[contenteditable="true"]', 'textarea'],
+  // 界面噪音行（stripUiChrome 用，整行匹配）
+  chrome: ['@ 添加上下文', '完全访问', '正常模式', '深度思考', '发送', '停止', '复制'],
+};
+
+/** 生成"在 root 下按降级链找第一个节点"的浏览器端表达式 */
+export function selExpr(key, rootVar = 'document') {
+  const list = SEL[key] || [];
+  return `(${rootVar}.querySelector(${JSON.stringify(list.join(','))}) )`;
+}
+
 // ---- 精确取回复：读"最后一条助手回合"里的最后一个 markdown 容器 ----
 // 实测结构（2026-11-13 探针）：div.turn__agent-message > div.agent-message-plan-flow > div.markdown-renderer > p
 // 注意：答案的渲染容器**也在** plan-flow 里面，所以不能排除 plan-flow，
 // 只能按"回合数增长 + 取回合内最后一个 renderer"来定位（思考过程是前一个）。
 const ANSWER_JS = `(() => {
-  const turns = document.querySelectorAll('.turn__agent-message');
+  const TURN = ${JSON.stringify(SEL.turn.join(','))};
+  const REND = ${JSON.stringify(SEL.renderer.join(','))};
+  const turns = document.querySelectorAll(TURN);
   const last = turns[turns.length - 1];
   let text = '';
   if (last) {
-    const rs = last.querySelectorAll('.markdown-renderer');
+    const rs = last.querySelectorAll(REND);
     const r = rs[rs.length - 1];
     if (r) text = (r.innerText || '').trim();
   }
