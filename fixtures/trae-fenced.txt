@@ -1,0 +1,6 @@
+TRAE
+```python
+def mul(a, b):
+    return a * b
+```
+由 AI 生成

@@ -1,0 +1,21 @@
+TRAE
+思考过程
+这里是说明：下面给一个函数。
+
+Python
+1
+2
+3
+4
+5
+6
+def top_lnk(root, n):
+    items = []
+    for dirpath, _dirs, files in os.walk(root):
+        for f in files:
+            if f.endswith(".lnk"):
+                items.append((os.path.getsize(os.path.join(dirpath, f)), f))
+    items.sort(reverse=True)
+    return items[:n]
+复制
+由 AI 生成
