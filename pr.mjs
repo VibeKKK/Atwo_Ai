@@ -177,13 +177,34 @@ function findOpen(s) {
   return open[open.length - 1];
 }
 
+/**
+ * 合并前清理工作区。
+ *
+ * 为什么需要：agent 干完活会把「团队记忆/预算/流水」这类运行时文件刷新一遍，
+ * 直接 throw 会让 approve 永远过不去（实测被 memory/STATE.md 拦住）。
+ * 但放行一切脏文件又危险 —— 会把没走提案的代码混进合并。所以只放行元数据，
+ * 并且只提交这几个路径。
+ */
+const META_TOLERANT = ['memory/STATE.md', 'memory/log.jsonl', 'memory/budget.json', 'memory/PR_LOG.md', 'memory/.prs.json'];
+
+function settleWorkspace() {
+  const dirty = changedFiles();
+  if (!dirty.length) return [];
+  const foreign = dirty.filter((f) => !META_TOLERANT.includes(f));
+  if (foreign.length) {
+    throw new Error('工作区有未提交改动（' + foreign.join(', ') + '），先提交再合并');
+  }
+  commitPaths('chore(memory): 同步运行时元数据', dirty);
+  return dirty;
+}
+
 /** 合并回主干 */
 export function approve(id, opts = {}) {
   const s = loadState();
   const pr = mustGet(s, id);
   if (pr.status === 'merged') return pr;
   if (!['ready', 'open'].includes(pr.status)) throw new Error('提案 ' + id + ' 状态是 ' + pr.status + '，不能合并');
-  if (isDirty()) throw new Error('工作区有未提交改动（' + changedFiles().join(', ') + '），先提交再合并');
+  settleWorkspace();
   checkout(MAIN);
   const mergeSha = mergeNoFf(pr.branch, 'merge: ' + pr.id + ' ' + pr.title);
   pr.status = 'merged';
