@@ -527,16 +527,36 @@ export function selExpr(key, rootVar = 'document') {
 // 实测结构（2026-11-13 探针）：div.turn__agent-message > div.agent-message-plan-flow > div.markdown-renderer > p
 // 注意：答案的渲染容器**也在** plan-flow 里面，所以不能排除 plan-flow，
 // 只能按"回合数增长 + 取回合内最后一个 renderer"来定位（思考过程是前一个）。
+// 2026-11-13 实测（Trae 3.4.18）：代码块的 textContent 保留完整缩进（4/8 空格），
+// 而 innerText 会被 CSS white-space 折叠成 1 空格 —— 直接读 innerText 会把所有 Python 代码废掉。
+// 所以这里自写序列化：块级元素补换行，PRE/CODE 一律取 textContent，绕开 CSS。
 const ANSWER_JS = `(() => {
   const TURN = ${JSON.stringify(SEL.turn.join(','))};
   const REND = ${JSON.stringify(SEL.renderer.join(','))};
+  const BLOCK = /^(DIV|P|LI|UL|OL|TR|TABLE|SECTION|ARTICLE|HEADER|FOOTER|BLOCKQUOTE|H[1-6]|DT|DD|FIGURE)$/;
+  function ser(root) {
+    let out = '';
+    (function walk(n) {
+      if (!n) return;
+      if (n.nodeType === 3) { out += n.nodeValue; return; }
+      if (n.nodeType !== 1) return;
+      const tag = n.tagName;
+      if (tag === 'PRE' || tag === 'CODE') { out += '\\n' + (n.textContent || '') + '\\n'; return; }
+      if (tag === 'BR') { out += '\\n'; return; }
+      const block = BLOCK.test(tag);
+      if (block) out += '\\n';
+      for (const ch of n.childNodes) walk(ch);
+      if (block) out += '\\n';
+    })(root);
+    return out.replace(/\\n{3,}/g, '\\n\\n').replace(/[ \\t]+$/gm, '');
+  }
   const turns = document.querySelectorAll(TURN);
   const last = turns[turns.length - 1];
   let text = '';
   if (last) {
     const rs = last.querySelectorAll(REND);
     const r = rs[rs.length - 1];
-    if (r) text = (r.innerText || '').trim();
+    if (r) text = ser(r).trim();
   }
   return { turns: turns.length, text: text };
 })()`;

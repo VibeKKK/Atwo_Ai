@@ -49,7 +49,20 @@ export function takeCode(text) {
   const s = String(text || '');
   const m = s.match(/```[a-zA-Z0-9_+-]*\s*\n([\s\S]*?)```/);
   if (m) return m[1];
-  return s;
+  // 没有围栏时的兜底（2026-11-13 实测遇到）：Trae 会把「代码 + 中文说明」混在一段里，
+  // 直接把整段当代码会 IndentationError。这里按「空行 + 以中文开头的非注释行」切掉尾部散文。
+  const lines = s.split(/\r?\n/);
+  const isProse = (ln) => {
+    const t = ln.trim();
+    if (!t) return false;
+    if (/^[#/]/.test(t)) return false;          // 注释不算散文
+    return /[\u4e00-\u9fff]/.test(t) && !/["'][^"']*[\u4e00-\u9fff]/.test(t); // 含中文且不在字符串里
+  };
+  let cut = lines.length;
+  for (let i = 1; i < lines.length; i++) {
+    if (isProse(lines[i]) && (lines[i - 1].trim() === '' || isProse(lines[i - 1]))) { cut = i; break; }
+  }
+  return lines.slice(0, cut).join('\n').replace(/\s+$/, '');
 }
 
 /** 结构化输出：能不能 parse 成对象，必要字段在不在 */
