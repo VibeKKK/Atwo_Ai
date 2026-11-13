@@ -55,10 +55,14 @@ export async function ensureTrae({ port = PORT, exe = TRAE_EXE, waitMs = 90000 }
 const PICK_EDIT = `(() => {
   const all = [...document.querySelectorAll('${SEL_EDIT}')]
     .map(e => ({ e, r: e.getBoundingClientRect() }))
-    .filter(x => x.r.width > 200 && x.r.height > 20);
-  if (!all.length) return null;
-  all.sort((a, b) => (b.r.width * b.r.height) - (a.r.width * a.r.height));
-  return all[0].e;
+    .filter(x => x.r.width > 100 && x.r.height > 10);
+  // 2026-11-13 修：Trae 面板切换瞬间输入框尺寸会归零，旧版宽高门槛（200x20）会把元素全滤掉，
+  // 表现为「明明有输入框却读到 null」。筛不到时退回任意 contenteditable。
+  if (all.length) {
+    all.sort((a, b) => (b.r.width * b.r.height) - (a.r.width * a.r.height));
+    return all[0].e;
+  }
+  return document.querySelector('${SEL_EDIT}') || null;
 })()`;
 
 async function inputSelectorReady(c, timeoutMs = 15000) {
@@ -71,7 +75,15 @@ async function inputSelectorReady(c, timeoutMs = 15000) {
 }
 
 async function readEditor(c) {
-  return c.js(`(() => { const e = ${PICK_EDIT}; return e ? e.innerText : null; })()`);
+  // 2026-11-13 修：元素未渲染时 e.innerText === undefined，经 JSON 序列化变 null，
+  // 于是「输入框空着」被误判成「读不到输入框」。改为：有元素就必返回字符串（退回 textContent）。
+  return c.js(`(() => {
+    const e = ${PICK_EDIT};
+    if (!e) return null;
+    const t = e.innerText;
+    if (typeof t === 'string') return t;
+    return (e.textContent == null ? '' : e.textContent);
+  })()`);
 }
 
 /**
@@ -187,8 +199,39 @@ const SER_TEXT = `(() => {
 })()`;
 
 /** 整页渲染文本（含滚动外内容，块级换行已保留） */
-async function pageText(c) {
-  return c.js(SER_TEXT);
+/** 等页面文本连续 quietMs 不再变化，再拿基线。
+ *  为什么必须有这一步：上一批被 kill 时 Trae 页面往往还在流式生成上一个答案。
+ *  此时 readAnswers 取到的基线是「半截文本」，生成结束后 ans.text !== baseAns.text 天然成立，
+ *  新调用就会把**别人的答案**当成自己的返回 —— 实测踩过：问 clamp，回的是上一轮的 plan.mjs。
+ *  静默数据损坏比调用直接失败严重得多（错误答案会被当成真结果落盘），所以宁可多等 2.5 秒。
+ *  超过 maxMs 还不安静也不阻塞调用：页面长期忙，后续判据本来就会超时，让它按原路径失败。
+ *  @param {object} c CDP 连接对象
+ *  @param {{quietMs?: number, maxMs?: number}} [opts] quietMs 默认 2500，maxMs 默认 30000
+ *  @returns {Promise<{ok: boolean, waitedMs: number}>} ok=false 表示是超时放行，不是成功 */
+async function waitSettled(c, opts = {}) {
+  const quiet = opts.quietMs ?? 2500;
+  const max = opts.maxMs ?? 30000;
+  const t0 = Date.now();
+  let last = '';
+  let sameSince = Date.now();
+  while (Date.now() - t0 < max) {
+    const cur = String((await readAnswers(c).catch(() => null) || {}).text || '');
+    if (cur !== last) { last = cur; sameSince = Date.now(); }
+    else if (Date.now() - sameSince >= quiet) return { ok: true, waitedMs: Date.now() - t0 };
+    await sleep(500);
+  }
+  return { ok: false, waitedMs: Date.now() - t0 };
+}
+
+async function pageText(c, scope) {
+  // 2026-11-13：默认收窄到对话区 `.ai-chat`。整页 body 会把左侧任务列表
+  // （"Create Python Retry Decorator" / "写 Python retry 装饰器" 之类）也算进答案，
+  // 实测抽出来的文本前面掺着会话标题。收窄后 diff 只包含真正的消息。
+  const sel = scope === undefined ? '.ai-chat' : scope;
+  if (!sel) return c.js(SER_TEXT);
+  const inScope = SER_TEXT.replace('walk(document.body)',
+    'walk(document.querySelector(' + JSON.stringify(sel) + ') || document.body)');
+  return c.js(inScope);
 }
 
 /** 判断 Trae 是否还在干活。作用域尽量收窄，避免用户提问里出现关键词就永远 busy */
@@ -205,6 +248,29 @@ async function isBusy(c) {
 
 // 点一下输入框中心拿焦点：新开对话后输入组件会被重建，没焦点时输入与回车都会落空。
 async function focusEditor(c) {
+  // 2026-11-13 修：优先用 JS `el.focus()` + Range 把光标放到末尾。
+  // 只用鼠标坐标点击时，页面一滚动/布局一动，点击就落空 → 焦点没进编辑器 → Enter 白按
+  //（表现为「回车没发出去，输入框还留着文字」）。鼠标点击降级为后备。
+  const viaJs = await c.js(`(() => {
+    const eds = [...document.querySelectorAll(SEL_EDIT)].filter(e => { const r = e.getBoundingClientRect(); return r.width > 100 && r.height > 10; });
+    const e = eds[0] || document.querySelector(SEL_EDIT);
+    if (!e) return 'NO_EDITOR';
+    try { e.focus(); } catch (err) { return 'FOCUS_THROW:' + String(err && err.message || err).slice(0, 60); }
+    const sel = window.getSelection();
+    if (sel) {
+      const r = document.createRange();
+      r.selectNodeContents(e);
+      r.collapse(false);
+      sel.removeAllRanges();
+      sel.addRange(r);
+    }
+    const act = document.activeElement;
+    const ok = act === e || (act && e.contains(act)) || e.contains(act);
+    return ok ? 'OK' : 'NOT_ACTIVE:' + (act ? (act.className || act.tagName) : 'null');
+  })()`.replace(/SEL_EDIT/g, JSON.stringify(SEL.edit)));
+  if (String(viaJs).startsWith('OK')) { await sleep(80); return true; }
+
+  // 后备：鼠标点元素中心
   const rect = await c.js(`(() => {
     const eds = [...document.querySelectorAll(SEL_EDIT)].filter(e => { const r = e.getBoundingClientRect(); return r.width > 100 && r.height > 10; });
     const e = eds[0]; if (!e) return null;
@@ -237,12 +303,49 @@ async function openTaskWith(c, needle) {
   await sleep(1200);
   return r;
 }
+// 2026-11-13 实测（_probe_send4.mjs）：真正的发送键是 `button.chat-input-v2-send-button`
+// （32×32，无 aria-label / title / 文本，所以按文字找必然点错；chat-icon-up 是模型选择器）。
+// 点它比按回车可靠：回车在长文本 / 焦点被抢时会被吞掉。
+async function clickSend(c) {
+  const box = await c.js(`(() => {
+    const b = document.querySelector('button.chat-input-v2-send-button');
+    if (!b) return null;
+    const r = b.getBoundingClientRect();
+    const disabled = b.disabled === true || b.getAttribute('aria-disabled') === 'true';
+    return JSON.stringify({ x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2), w: Math.round(r.width), disabled });
+  })()`);
+  if (!box) return { ok: false, reason: 'no-button' };
+  const b = JSON.parse(box);
+  if (b.disabled) return { ok: false, reason: 'disabled' };
+  const { x, y } = b;
+  await c.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+  await c.call('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
+  await c.call('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
+  for (let i = 0; i < 10; i++) {
+    await sleep(200);
+    const cur = await readEditor(c).catch(() => null);
+    if (cur === null) return { ok: true, sentBy: 'button-editor-gone', at: { x, y } };
+    if (String(cur).replace(/[\s\u200b]/g, '') === '') return { ok: true, sentBy: 'button', at: { x, y } };
+  }
+  return { ok: false, reason: 'not-cleared', at: { x, y } };
+}
+
 async function pressEnter(c) {
   // 实测（2026-11-13，_probe_enter.mjs）：Trae 只认 keyDown + keyUp，不带 text；
   // rawKeyDown+char 反而发不出去。另一个必要条件是**发送前重新聚焦**。
-  // 不要去找「发送」按钮点它——页面上有同名不同用途的按钮，点错会把输入框点没。
-  for (let round = 1; round <= 3; round++) {
-    try { await focusEditor(c); } catch { }
+  // 2026-11-13 修（第二轮）：先点 `button.chat-input-v2-send-button`——实测回车在长文本
+  // 时会被吞（连按 4 次输入框仍留 64 字符），而按钮点击一次就过。回车降级为后备。
+  // 返回 {ok, sentBy, rounds, lastLen, lastFocus}。
+  try {
+    const click = await clickSend(c);
+    if (click.ok) return { ok: true, sentBy: click.sentBy, rounds: 0, lastLen: 0, lastFocus: 'click', editorFound: true };
+  } catch (e) { /* 按钮路径失败就走回车 */ }
+  const BACKOFF = [300, 600, 1000, 1500];
+  let lastLen = -1;
+  let lastFocus = '';
+  let noEditor = 0;
+  for (let round = 1; round <= BACKOFF.length; round++) {
+    try { lastFocus = String(await focusEditor(c)); } catch (e) { lastFocus = 'THROW:' + (e && e.message); }
     await sleep(120);
     await c.call('Input.dispatchKeyEvent', {
       type: 'keyDown', key: 'Enter', code: 'Enter',
@@ -252,10 +355,48 @@ async function pressEnter(c) {
       type: 'keyUp', key: 'Enter', code: 'Enter',
       windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13,
     });
-    await sleep(250);
-    // 发送成功的判据：输入框只剩空白（实测会留一个 \n）
-    const cur = await readEditor(c).catch(() => null);
-    if (cur !== null && cur.replace(/[\s\u200b]/g, '') === '') return true;
+    // 清空可能不是瞬时的：每轮最多轮询 1.2 秒
+    for (let i = 0; i < 6; i++) {
+      await sleep(200);
+      const cur = await readEditor(c).catch(() => null);
+      // 2026-11-13 修（决定性）：按 Enter 之后 Trae 会切走/卸载输入框，
+      // 于是 readEditor 返回 null。旧逻辑把这个 null 当成「没清空 → 没发出去」，
+      // 把已经成功的发送误报成失败（实测连测两次都是 0/1 且报「输入框读不到」）。
+      // 现在：编辑器消失 = 已发送，交给外层用「是否出现新答案」来最终确认。
+      if (cur === null) {
+        return { ok: true, rounds: round, lastLen: 0, lastFocus, editorFound: false, sentBy: 'editor-gone' };
+      }
+      const stripped = String(cur).replace(/[\s\u200b]/g, '');
+      if (stripped === '') return { ok: true, rounds: round, lastLen: 0, lastFocus, editorFound: true };
+      lastLen = stripped.length;
+    }
+    await sleep(BACKOFF[round - 1]);
+  }
+  return { ok: false, rounds: BACKOFF.length, lastLen, lastFocus, editorFound: noEditor === 0 };
+}
+
+// 发送失败时的自愈。实测：卡住的会话里按钮和回车会持续失效（日志里同一题连挂 4 次），
+// 而换新对话后同一份文本能正常发出 —— 坏的会话层状态，不是输入方式本身。
+// 返回 true 表示两档之中有一档已成功送出。
+async function recoverSend(c, text) {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      if (attempt === 1) {
+        // 一档：原地清空 + 重新粘贴（面板只是被打断时，这一档就够）
+        await clearInput(c);
+        await sleep(200);
+      } else {
+        // 二档：开新对话彻底重置（会话状态坏了，原地清空救不回来）
+        await clickNewTask({ port: PORT });
+        await sleep(700);
+      }
+      await typeInto(c, text);
+      await sleep(250);
+      const e = await pressEnter(c);
+      if (e && e.ok) { console.error('[自愈' + attempt + '] 已送出'); return true; }
+    } catch (err) {
+      console.error('[自愈' + attempt + '] 失败：' + (err && err.message));
+    }
   }
   return false;
 }
@@ -322,18 +463,28 @@ export async function askTrae(prompt, opts = {}) {
   const timeoutMs = Math.max(opts.timeoutMs ?? 240000, 30000);
   const settleMs = opts.settleMs ?? 3500;   // busy 判断已收窄到页尾，不需要长等
   // 确保 Trae 在跑（没跑就带干净环境拉起来，避免 ELECTRON_RUN_AS_NODE 把它变成 node 进程）
-  await ensureTrae({ port: opts.port ?? PORT, waitMs: opts.bootTimeoutMs ?? 90000 });
+  // 2026-11-13 加（rank2）：`--no-autostart` / ORCH_TRAE_NO_AUTOSTART=1 关掉自动拉起。
+  // 用户手动开着 Trae 干别的事时，自动拉起会插一个新窗口抢焦点。
+  // 关掉后若端口本来就不通，要明确报错，不能让它静默走到 attach 失败。
+  const noAuto = opts.autostart === false || process.env.ORCH_TRAE_NO_AUTOSTART === '1';
+  if (noAuto) {
+    if (!(await portOpen(PORT))) throw new Error('Trae 未运行，且已禁用自动拉起（ORCH_TRAE_NO_AUTOSTART=1）：请先手动打开 Trae CN 再派活');
+  } else {
+    await ensureTrae({ port: opts.port ?? PORT, waitMs: opts.bootTimeoutMs ?? 90000 });
+  }
   // 端口开了不等于窗口建好了，等 Agent 面板目标出现再连
   await waitForTarget(opts.port ?? PORT, 'Agent', opts.bootTimeoutMs ?? 90000);
   const c = await attach(opts.port ?? PORT, 'Agent');
   try {
     if (!await inputSelectorReady(c)) throw new Error('Trae Agent 面板没就绪');
 
-    // 默认每次派活先开新对话 —— 让「回合数」判据重新可靠：
-    // Trae 的会话列表虚拟化，DOM 只留最近 ~5-11 条，到上限后回合数不再增长，
-    // 连续两次问同一句、答案又一样时文本指纹也不变，就判不出来。开新对话把回合数归零。
-    // 要保留上下文连续对话，设 ORCH_TRAE_REUSE=1。
-    if (process.env.ORCH_TRAE_NEW_CHAT === '1') {
+    // 开新对话默认关闭（2026-11-13 回退）：
+    // 实测「点新建任务 → 落地页输入 → 发送」这条路里，Trae 把消息接下去但
+    // 会话区（.ai-chat / 虚拟列表）读不到任何文本，判据必空转。
+    // 目前可靠的仍是「在已有会话里继续问 + 用最后一条回合文本判完成」。
+    //   ORCH_TRAE_NEW_CHAT=1 手动开启（适合人工盯着跑）
+    const useNewChat = process.env.ORCH_TRAE_NEW_CHAT === '1';
+    if (useNewChat) {
       try {
         const nc = await clickNewTask({ port: opts.port ?? PORT });
         if (!nc.ok) console.error('[提示] 开新对话失败：' + nc.reason);
@@ -349,6 +500,24 @@ export async function askTrae(prompt, opts = {}) {
     if (left > 0) throw new Error('清空输入框失败，还剩 ' + left + ' 个非空白字符');
 
     const typed = await typeInto(c, prompt);
+    // 2026-11-13 修（关键）：开新对话后页面会整体换掉输入组件。若在切换途中写进去，
+    // 文字会落在已被丢弃的旧编辑器上 —— 表现为「typeInto 校验通过、发送键却是 disabled、
+    // 发出去什么都没有、轮询 45 秒 turns 恒为 0」。
+    // 这里做一次硬校验：当前可见编辑器里的字数必须接近 prompt 长度，否则报错而不是白等。
+    {
+      const wantLen = String(prompt).replace(/\s/g, '').length;
+      let gotLen = -1;
+      for (let i = 0; i < 10; i++) {
+        const cur = await readEditor(c).catch(() => null);
+        gotLen = cur === null ? -1 : String(cur).replace(/\s/g, '').length;
+        if (gotLen >= Math.min(8, wantLen)) break;
+        await sleep(200);
+      }
+      if (gotLen < Math.min(8, wantLen)) {
+        throw new Error('输入框内容没落住（可见编辑器里只有 ' + gotLen + ' 个非空白字符，期望 ≈' + wantLen +
+          '）；通常是刚开新对话、页面还没换成新输入框。可重试一次。');
+      }
+    }
     const tailWant = String(prompt).replace(/\r/g, '').replace(/\n+/g, '\n').trim().slice(-30);
     if (!typed.includes(tailWant)) {
       throw new Error('写入内容不完整。期望结尾「' + JSON.stringify(tailWant) + '」，实际结尾「' + JSON.stringify(typed.slice(-60)) + '」');
@@ -356,23 +525,47 @@ export async function askTrae(prompt, opts = {}) {
 
     // 基线必须在「输入框已写满、还没发送」这一刻取 —— 之前取会把残留草稿算进去
 
+    // 2026-11-14 修（串台）：先等页面安静，再取基线，见 waitSettled 注释
+    const settled = await waitSettled(c, { quietMs: 2500, maxMs: 30000 });
+    if (!settled.ok) console.error('[提示] 发送前页面 ' + Math.round(settled.waitedMs / 1000) + 's 未安静，按现状取基线（可能读到半截答案）');
+
     const beforeText = await pageText(c);
     let baseAns = await readAnswers(c);   // 发送前的回复容器数量（判断"是否新增一条"的基准）
     // Trae 的会话列表只保留最近若干条；接近上限后「回合数」不再增长，
     // 此时只有「文本指纹变化」可用 —— 同问题同答案会判不出来，需要开新对话。
     if (baseAns.turns >= 8) console.error('[提示] 当前会话已有 ' + baseAns.turns + ' 条回合（接近虚拟化上限），建议在 Trae 里开一个新对话以免判据失灵');
     await sleep(250);
-    await pressEnter(c);
+    const enter = await pressEnter(c);
 
-    // 1) 确认发出去了：输入框被清空
+    // 1) 确认发出去了：以 pressEnter 的返回值为准（它内部已做 4 轮退避 + 每轮 1.2s 轮询）
     let t0 = Date.now();
-    let sent = false;
-    for (let i = 0; i < 40; i++) {
-      await sleep(250);
-      const cur = await readEditor(c);
-      if (cur !== null && cur.replace(/[\s\u200b]/g, '') === '') { sent = true; break; }
+    let sent = enter.ok;
+    if (!sent) {
+      // 兜底：再等 3 秒看是否是慢清空
+      for (let i = 0; i < 12; i++) {
+        await sleep(250);
+        const cur = await readEditor(c).catch(() => null);
+        if (cur !== null && String(cur).replace(/[\s\u200b]/g, '') === '') { sent = true; break; }
+      }
     }
-    if (!sent) throw new Error('回车没发出去，输入框还留着文字');
+    if (!sent) {
+      // 2026-11-13 修（rank2）：实测「发不出去」是状态累积型故障 —— 一旦卡住，
+      // 同一会话里会连续失败（日志里 py-retry-decorator 连挂 4 次、py-dedup 连挂 3 次，
+      // 合计 10 次白丢任务）。旧逻辑直接抛错，等于把可自愈的故障当终局。
+      // 现在先自愈两级再判死：① 原地清空重贴重发 ② 开新对话重置后重贴重发。
+      const healed = await recoverSend(c, tailWant);
+      if (healed) {
+        sent = true;
+        t0 = Date.now();
+        baseAns = await readAnswers(c).catch(() => baseAns);
+      }
+    }
+    if (!sent) {
+      if (enter.lastLen < 0 || enter.editorFound === false) {
+        throw new Error('Trae 输入框读不到（重试 ' + enter.rounds + ' 轮 + 自愈 2 级均失败；聚焦结果 ' + enter.lastFocus + '；可能是面板正在切换，稍等重试）');
+      }
+      throw new Error('回车没发出去（重试 ' + enter.rounds + ' 轮 + 自愈 2 级均失败；输入框还留着 ' + enter.lastLen + ' 字符；聚焦结果 ' + enter.lastFocus + '）');
+    }
 
     // 实测：发送后有时会停在「任务列表」页（div.taskItem），此时对话区的 SEL.turn 为 0，
     // 不点进去就永远读不到答案（表现为 ESTALE）。点进去后基线清零，用「非空 + 稳定」判完成。
@@ -404,13 +597,29 @@ export async function askTrae(prompt, opts = {}) {
       await sleep(700);
       const ans = await readAnswers(c);
       const busy = await isBusy(c);
-      const changed = !!ans.text && ans.text !== baseAns.text;
+      // 2026-11-13 修：容器里先出现的是「用户自己那条消息」，此时 ans.text 已经变了但答案还没来。
+      // 若把它当完成信号，就会在 3.5 秒后 break、抽出空答案（实测 ok=false len=0 src=container）。
+      // 所以要求容器文本长度必须超过 prompt 本身，才算真有回答。
+      const promptLen = String(prompt).length;
+      const changed = !!ans.text && ans.text !== baseAns.text && ans.text.length > promptLen + 5;
       // 盲区修复：如果两次问的是同一句话、答案也一模一样，文本指纹就不会变。
       // 这时用「回合数变多」或「确实忙过一轮 + 当前有文本」作为补充证据。
       const grew = ans.turns > baseAns.turns;
+      // 第三信号（2026-11-13 新增，解决新对话判据失灵）：
+      // 新建任务后 Trae 的会话区是 Virtuoso 虚拟列表，`.task-session-content .ai-chat`
+      // 这一层 textContent 为空（消息在虚拟滚动容器里尚未挂载），于是 turns 恒 0、text 恒空，
+      // 判据等 45 秒也等不到。这里改用整页文本增长作为证据 —— 页面文本一定包含答案。
+      let pageGrew = false;
+      let ptText = '';
+      try {
+        ptText = await pageText(c);
+        pageGrew = ptText.length > beforeText.length + 20 && ptText !== beforeText;
+      } catch { }
       // 注意：不拿 sawBusy 兜底 —— 那会在 Trae 没真回答时接受上一轮的旧文本（实测过）。
-      const active = changed || grew;
-      if (DEBUG) console.error(`[poll ${((Date.now() - t0) / 1000).toFixed(1)}s] busy=${busy} turns=${ans.turns}(base ${baseAns.turns}) len=${ans.text.length} changed=${changed}`);
+      const active = changed || grew || pageGrew;
+      // 指纹：会话容器能读到文本就用它，读不到（Virtuoso 未挂载）就用整页文本尾部。
+      const fp = (ans.text && ans.text.length) ? ans.text : ptText.slice(-3000);
+      if (DEBUG) console.error(`[poll ${((Date.now() - t0) / 1000).toFixed(1)}s] busy=${busy} turns=${ans.turns}(base ${baseAns.turns}) len=${ans.text.length} changed=${changed} pageGrew=${pageGrew}`);
       if (busy) sawBusy = true;
       // 快速失败：45 秒内既没新回合、文本也没变 —— 说明 Trae 没接这轮
       // （典型两种：会话已满到虚拟化上限、或答案与上一轮完全相同导致指纹不变）
@@ -442,8 +651,8 @@ export async function askTrae(prompt, opts = {}) {
       }
 
       if (active) {
-        if (ans.text !== lastText) {
-          lastText = ans.text;
+        if (fp !== lastText) {
+          lastText = fp;
           stableSince = Date.now();
         } else if (Date.now() - stableSince >= settleMs) {
           finished = true;
@@ -457,8 +666,11 @@ export async function askTrae(prompt, opts = {}) {
 
     // 3) 取结果：容器法优先（干净），失败才退回页面文本 diff
     const ans = await readAnswers(c);
-    const changedNow = !!ans.text && ans.text !== baseAns.text;
-    const grewNow = ans.turns > baseAns.turns;
+    // 与循环里同一把尺：容器文本必须超过 prompt 长度才算「真有回答」，
+    // 否则会抽出用户自己那条消息（extractReply 会把它剥掉 → 空串 → ok=false）。
+    const promptLenNow = String(prompt).length;
+    const changedNow = !!ans.text && ans.text !== baseAns.text && ans.text.length > promptLenNow + 5;
+    const grewNow = ans.turns > baseAns.turns && !!ans.text && ans.text.length > promptLenNow + 5;
     const activeNow = changedNow || grewNow;
     let added, source;
     if (activeNow) {
@@ -475,9 +687,36 @@ export async function askTrae(prompt, opts = {}) {
         throw err;
       }
       const afterText = await pageText(c);
+      // 2026-11-13 修（评测实测暴露两种抢跑）：① 拿到的其实是 prompt 自己（回声）
+      // ② 拿到上一题的答案（答案迟到，diff 从上一轮末尾开始）。两者都会让判据误判。
+      // 统一修法：只在「本题 prompt 之后」的内容里取答案——定位 prompt 首句，从它后面切。
       const rawAdded = afterText.slice(commonPrefixLen(beforeText, afterText)).trim();
       added = cleanCodeChrome(extractReply(rawAdded));
       source = 'text-diff';
+    }
+
+    // 2026-11-13 修（评测实测暴露）：判据会「抢跑」——用户那条消息先出现，diff 拿到的
+    // 其实是 prompt 自己，于是 rows 里出现「FAIL 但 text 是题目原文」；偶尔还会拿到上一题的答案。
+    // 这里加一道终检：如果抽出来的内容基本就是 prompt 本身（或短得不像答案），继续等答案。
+    {
+      const pNorm = String(prompt).replace(/\s+/g, '');
+      const looksEcho = (s) => {
+        const t = String(s || '').replace(/\s+/g, '');
+        if (!t) return true;
+        if (t.length < 20) return true;
+        return pNorm.startsWith(t.slice(0, 30)) || t === pNorm;
+      };
+      for (let i = 0; i < 28 && looksEcho(added); i++) {
+        await sleep(700);
+        const a2 = await readAnswers(c);
+        const cand = cleanCodeChrome(extractReply(a2.text || ''));
+        if (!looksEcho(cand)) { added = cand; source = 'container-late'; break; }
+        const aft = await pageText(c);
+        const raw2 = aft.slice(commonPrefixLen(beforeText, aft)).trim();
+        const cand2 = cleanCodeChrome(extractReply(raw2));
+        if (!looksEcho(cand2)) { added = cand2; source = 'text-diff-late'; break; }
+        added = cand2.length > added.length ? cand2 : added;
+      }
     }
     const result = {
       ok: finished && added.length > 0,
@@ -615,21 +854,34 @@ export async function snapshotTrae(opts = {}) {
 export async function clickNewTask(opts = {}) {
   const c = await attach(opts.port ?? PORT, 'Agent');
   try {
-    const r = await c.js(`(() => {
-      const bs = [...document.querySelectorAll('button[aria-label="新建任务"]')];
-      const b = bs.find(x => x.getBoundingClientRect().width > 0) || bs[0];
-      if (!b) return 'not-found';
-      b.click();
-      return 'clicked';
+    // 2026-11-13 修：① 改成 CDP 真实鼠标点击（React 组件不认 JS .click()）
+    //               ② 目标改成侧栏条目 `div.task-list-new-task-item`（3.4.18 实测坐标 12,56 276×34）
+    //               ③ 清空判据改用 SEL.turn（旧类 turn__agent-message 已不存在）
+    const TURN_SEL = Array.isArray(SEL.turn) ? SEL.turn.join(',') : SEL.turn;
+    const box = await c.js(`(() => {
+      const cands = [...document.querySelectorAll('div.task-list-new-task-item, button[aria-label="新建任务"]')];
+      const b = cands.find(x => {
+        const r = x.getBoundingClientRect();
+        return r.width > 60 && r.height > 20;
+      });
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return JSON.stringify({ x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2),
+        cls: String(b.className || '').slice(0, 40), text: (b.innerText || '').trim().slice(0, 10) });
     })()`);
-    if (r !== 'clicked') return { ok: false, reason: '找不到「新建任务」按钮' };
-    // 等它真的清空
-    for (let i = 0; i < 20; i++) {
+    if (!box) return { ok: false, reason: '找不到「新建任务」按钮（宽高 >60×20 的可见元素）' };
+    const { x, y } = JSON.parse(box);
+    await c.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+    await c.call('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
+    await c.call('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
+    // 等它真的清空：turns 归 0 或元素整体消失
+    let lastTurns = -1;
+    for (let i = 0; i < 25; i++) {
       await sleep(200);
-      const n = await c.js(`document.querySelectorAll('[class*="turn__agent-message"]').length`);
-      if (n === 0) return { ok: true };
+      lastTurns = await c.js(`document.querySelectorAll(${JSON.stringify(TURN_SEL)}).length`);
+      if (lastTurns === 0) return { ok: true, at: { x, y } };
     }
-    return { ok: false, reason: '点了但会话没清空' };
+    return { ok: false, reason: '点了但会话没清空（turns=' + lastTurns + '）', at: { x, y } };
   } finally {
     try { c.close(); } catch { }
   }

@@ -98,7 +98,10 @@ function askOnce(agent, prompt, timeoutMs) {
 }
 
 async function runLive() {
-  const agent = val('--agent') || 'auto';
+  // 2026-11-13：默认改成 codebuddy。实测同一批 8 题 codebuddy 8/8，
+  // trae 最好 6/8 且会抖到 2/8（见 agents/trae.mjs 里的竞态注释）。
+  // 要评 trae 必须显式 --agent trae，避免把两家的数据混在一起比。
+  const agent = val('--agent') || 'codebuddy';
   const limit = Number(val('--limit') || 0) || TASKS.length;
   const only = val('--only');
   const timeoutMs = Number(val('--timeout') || process.env.EVAL_TIMEOUT_MS || 300000);

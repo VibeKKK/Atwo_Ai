@@ -25,7 +25,11 @@ const SEL = {
   send: ['button[aria-label="发送"]', 'button[aria-label="Send"]'],
   agent: ['.cr-agent', '[data-message-id].cr-agent'],
 };
-const CHROME_LINE = /^(WorkBuddy|已完成.*|Hy4|DeepSeek.*|\d{1,2}:\d{2}(:\d{2})?|\d+\s*[s秒])$/;
+// 注意「已处理」和「已完成」不是一回事：思考中显示「已处理 5s」，收尾才变「已完成」。
+// 2026-11-14 实测：把「已处理 5s / 准备中 / 思路在堵车，我正在指挥交通 / 不再显示」当成答案返回过。
+const CHROME_LINE = /^(WorkBuddy|已完成.*|已处理.*|准备中|不再显示|思路在堵车.*|思考中.*|Hy4|DeepSeek.*|\d{1,2}:\d{2}(:\d{2})?|\d+\s*[s秒]|\|)$/;
+// 「还在跑」的界面信号：命中就说明这一屏不是答案，别当完成
+const RUNNING_RE = /(思路在堵车|正在指挥交通|准备中|已处理\s*\d|思考中)/;
 
 export const META = {
   name: 'workbuddy',
@@ -174,6 +178,14 @@ export async function ask(prompt, { timeoutMs = 240000, settleMs = 3500 } = {}) 
     while (Date.now() < deadline) {
       await sleep(900);
       const s = JSON.parse(await c.ev(SNAP_JS));
+      const cleanedNow = cleanReply(s.text || '');
+      // 2026-11-14 修：思考中的界面文案是「稳定的」，旧逻辑 3.5 秒就当成答案收工。
+      // 现在只有「洗完还剩正文」且「没有还在跑的标记」才算候选答案。
+      const looksRunning = !cleanedNow || RUNNING_RE.test(s.text || '');
+      if (looksRunning) {
+        stable = 0;
+        continue;
+      }
       if (s.agentCount > base.agentCount && s.text && s.text !== lastText) {
         lastText = s.text; stable = 0;
       } else if (s.text === lastText && lastText) {
