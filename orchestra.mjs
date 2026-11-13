@@ -24,6 +24,7 @@ import { JSON_CONTRACT, PROSE_CONTRACT, parseContract, renderContract, fallbackC
 import { withLock, withTimeout, listLocks } from './lib/lock.mjs';
 import { check as budgetCheck, record as budgetRecord, report as budgetReport, usedToday } from './lib/budget.mjs';
 import { start as prStart, finish as prFinish } from './pr.mjs';
+import { loadTasks, buildBatchPrompt, splitResults } from './lib/batch.mjs';
 
 const TASK_TIMEOUT_MS = Number(process.env.ORCH_TIMEOUT_MS || 240000);
 const EST_INPUT = { codebuddy: 24848, trae: 0 };
@@ -73,6 +74,8 @@ function usage() {
   auto "<prompt>"            同上，更短的写法
   review <agent> <file>      让对方审文件，评审存进 reviews/
   duo <agentA> <agentB> "p"  同题并行派给两个 agent，对比耗时与产出
+  batch <agent> <任务源>      N 个小任务压进一次调用（省掉 N-1 份固定开销）
+                             任务源：tasks.md 文件 / "甲|||乙|||丙" / - 开头的行
   stats                      效率看板：次数/成功率/均耗时/均字符/token/成本
   budget                     今天的额度账（调用次数 / token / 剩余）
   health                     谁活着、谁占着锁、还剩多少额度
@@ -440,6 +443,61 @@ try {
     process.exit(0);
   }
 
+
+  // ---- batch：把 N 个小任务压进一次调用，摊薄固定开销 ----
+  // codebuddy 每次固定吃 ~24,800 input token（CLI 自带 system prompt），
+  // 5 个任务分 5 次 = 12.4 万；压成 1 次 = 2.5 万。这是最直接的省钱手段。
+  if (cmd === 'batch') {
+    const agentName = (who || 'codebuddy').toLowerCase();
+    const src = rest.join(' ').trim();
+    if (!src) { console.error('用法: batch <agent> <tasks.md | "任务1|||任务2">'); process.exit(2); }
+    const tasks = loadTasks(src);
+    if (!tasks.length) { console.error('没解析出任务'); process.exit(2); }
+    if (tasks.length === 1) console.error('[batch] 只有 1 个任务，批处理没意义，直接用 ask 更清楚');
+    const B = EST_INPUT[agentName] ?? 0;
+    console.log(`[batch] ${tasks.length} 个任务 → ${agentName}（预计 ${tasks.length === 1 ? '不省' : '省 ' + (tasks.length - 1) * B} tok）`);
+    const prompt = buildBatchPrompt(tasks);
+    const t0 = Date.now();
+    const ag = { trae: { ask: askTrae }, codebuddy: { ask: askCodeBuddy } }[agentName];
+    if (!ag) { console.error('未知 agent: ' + agentName); process.exit(2); }
+    const gate = budgetCheck(agentName, B);
+    if (!gate.ok) { console.error('EBUDGET ' + gate.reason); process.exit(3); }
+    let raw = '';
+    let ok = true;
+    try {
+      raw = String(await withLock(agentName, () => withTimeout(
+        () => ag.ask(prompt, { timeoutMs: TASK_TIMEOUT_MS }),
+        TASK_TIMEOUT_MS + 20000, agentName,
+      ), { onWait: () => console.error('[队列] ' + agentName + ' 正忙，排队等待…') }) || '');
+    } catch (e) {
+      ok = false; raw = '';
+      console.error('EAGENTFAIL ' + (e && e.message ? e.message : e));
+    }
+    const { source, items } = splitResults(raw, tasks);
+    const secs = ((Date.now() - t0) / 1000).toFixed(1);
+    console.log(`[batch] ${ok ? 'ok' : 'fail'}  ${secs}s  解析=${source}  拿到 ${items.length}/${tasks.length} 项`);
+    console.log('');
+    items.forEach((it, i) => {
+      const task = tasks[i] || '';
+      console.log(`── ${it.id}. ${task.slice(0, 60)}`);
+      const body = (it.code || it.answer || '').trim();
+      console.log(body ? body.split('\n').map((l) => '   ' + l).join('\n') : '   （空）');
+      if (it.notes && it.notes.length) console.log('   · ' + it.notes.join(' / '));
+      if (typeof it.confidence === 'number') console.log(`   (confidence ${it.confidence})`);
+      console.log('');
+    });
+    const missing = tasks.length - items.filter((it) => (it.code || it.answer || '').trim()).length;
+    if (missing > 0) console.log(`[batch] 注意：${missing} 项没拿到内容，可重派或缩小任务粒度`);
+    try {
+      budgetRecord(agentName, { input: B, output: Math.ceil(raw.length / 4), ok });
+      appendLog({
+        at: new Date().toISOString(), kind: 'batch', agent: agentName, ok,
+        promptSummary: `[batch ${tasks.length} 项] ` + String(tasks[0]).slice(0, 40),
+        chars: raw.length, secs: Number(secs), items: items.length,
+      });
+    } catch { /* 记账失败不挡结果 */ }
+    process.exit(0);
+  }
 
   if (cmd === 'peek') {
     console.log(await agent.peek());
