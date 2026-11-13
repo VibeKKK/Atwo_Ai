@@ -29,6 +29,7 @@ import { preflightTrae } from './lib/preflight.mjs';
 import { check as budgetCheck, record as budgetRecord, report as budgetReport, usedToday } from './lib/budget.mjs';
 import { start as prStart, finish as prFinish } from './pr.mjs';
 import { loadTasks, buildBatchPrompt, splitResults } from './lib/batch.mjs';
+import { add as ephAdd, list as ephList, remove as ephRemove, clear as ephClear, gc as ephGc, briefBlock as ephBrief, readSkill as ephReadSkill, stats as ephStats, KINDS as EPH_KINDS } from './lib/ephemeral.mjs';
 
 const TASK_TIMEOUT_MS = Number(process.env.ORCH_TIMEOUT_MS || 240000);
 const EST_INPUT = { codebuddy: 24848, trae: 0 };
@@ -70,6 +71,9 @@ function ensureFenceHint(name, prompt) {
 }
 
 const [cmd, who, ...rest] = process.argv.slice(2);
+
+// 启动即清理过期临时能力（会话结束/超时的自动消失）
+const STARTUP_GC = (() => { try { return ephGc(); } catch { return 0; } })();   // 启动即清过期
 
 function usage() {
   console.log(`Orchestra — AI 协作台
@@ -189,7 +193,7 @@ if (cmd === 'memory') {
     process.exit(0);
   }
 
-const NO_AGENT_CMDS = ['duo','stats','auto','pick','doctor','probe','budget','health','list'];
+const NO_AGENT_CMDS = ['eph','duo','stats','auto','pick','doctor','probe','budget','health','list'];
 const needsAgent = !NO_AGENT_CMDS.includes(cmd);
 let agent = REGISTRY[who];
 let effectiveWho = who;
@@ -235,8 +239,26 @@ async function dispatch(kindLabel, rawPrompt, extra = {}) {
   // 会把「@ 添加上下文」「完全访问」这类 UI 文案算进回答（实测污染过一次）。
   const codeTask = isCodeTask(rawPrompt);
   const wantContract = extra.contract ?? (process.env.ORCH_NO_CONTRACT !== '1');
-  const base = ensureFenceHint(name, rawPrompt) + tail;
+  let base = ensureFenceHint(name, rawPrompt) + tail;
+  // 临时能力（ephemeral）：只把「有什么」压成 ≤1200 字符注入，全文按需读 ——
+  // 这样能力本身不占常驻上下文，会话结束自动失效。
+  if (process.env.ORCH_NO_EPHEMERAL !== '1') {
+    try { const blk = ephBrief(); if (blk) base += blk; } catch { /* 读不到就当没有 */ }
+  }
+  if (extra.skill) {
+    try {
+      const s = ephReadSkill(extra.skill, { maxChars: Number(process.env.ORCH_SKILL_CHARS || 3000) });
+      if (s.ok) base += `
+
+[技能正文 · ${extra.skill}${s.truncated ? ' · 已截断' : ''}]
+${s.text}
+[/技能正文]`;
+      else console.error('[临时能力] ' + s.reason);
+    } catch { /* 技能读失败不挡派活 */ }
+  }
   const prompt = wantContract ? base + (codeTask ? JSON_CONTRACT : PROSE_CONTRACT) : base;
+  if (extra.dry) return { dry: true, ok: true, prompt, agent: name, codeTask, wantContract };
+
 
   // 结果缓存（C②）：同 agent + 同 prompt 直接复用，不再付第二次钱。
   // 只查「成功输出」；命中后仍走同样的渲染与语法校验路径（语法再验一次很便宜）。
@@ -424,9 +446,22 @@ function renderOut(r, contract, syntax) {
 
 try {
   if (cmd === 'ask') {
-    const prompt = rest.join(' ').trim();
+    // --skill <名字> 临时注入技能正文；--ttl 只是给 eph add 用，这里忽略
+    const args = rest.slice();
+    let skill = null;
+    let dry = false;
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === '--skill') { skill = args[i + 1]; args.splice(i, 2); i--; }
+      if (args[i] === '--dry') { dry = true; args.splice(i, 1); i--; }
+    }
+    const prompt = args.join(' ').trim();
     if (!prompt) { console.error('prompt 不能为空'); process.exit(2); }
-    const r = await dispatch('ask', prompt);
+    const r = await dispatch('ask', prompt, (skill || dry) ? { skill, dry } : {});
+    if (r.dry) {
+      console.log('=== 将要发给 ' + r.agent + ' 的完整 prompt（' + r.prompt.length + ' 字符，未发出）===');
+      console.log(r.prompt);
+      process.exit(0);
+    }
     console.log(renderOut(r, r.contract, r.syntax));
     process.exit(0);
   }
@@ -661,8 +696,36 @@ try {
     process.exit(0);
   }
 
+  if (cmd === 'eph') {
+    // 注意 CLI 拆参：`eph add skill X` → cmd=eph, who=add, rest=['skill','X']
+    // 所以参数组要把 who 拼回来，否则 sub 会变成 'skill'。
+    const A = [who, ...rest].filter(x => x !== undefined);
+    const sub = A[0] || 'list';
+    const arg = (n) => { const i = A.indexOf(n); return i >= 0 ? A[i + 1] : null; };
+    if (sub === 'list') {
+      const items = ephList({});
+      if (!items.length) { console.log('本会话没有临时能力。'); console.log('用法：eph add skill <名字> | eph add plugin <id> | eph add tool <名字> --file <路径> | eph add file <路径>'); process.exit(0); }
+      for (const x of items) console.log(`${x.kind.padEnd(7)} ${x.name}  剩 ${x.leftMin} 分钟${x.file ? '  ' + x.file : ''}${x.note ? '  · ' + x.note : ''}`);
+      process.exit(0);
+    }
+    if (sub === 'add') {
+      const kind = A[1], name = A[2];
+      if (!kind || !name) { console.error('用法：eph add <skill|plugin|tool|file> <名字> [--file 路径] [--note 说明] [--ttl 小时]'); process.exit(2); }
+      const rec = ephAdd({ kind, name, file: arg('--file'), note: arg('--note') || '', ttlMs: arg('--ttl') ? Number(arg('--ttl')) * 3600 * 1000 : undefined });
+      console.log(`已加入临时能力：${rec.kind} ${rec.name}（${Math.round((rec.expiresAt - Date.now()) / 60000)} 分钟后自动失效）`);
+      process.exit(0);
+    }
+    if (sub === 'rm') { const n = ephRemove(A[1]); console.log(n ? `已移除 ${n} 条` : '没找到'); process.exit(0); }
+    if (sub === 'clear') { console.log('已清除本会话 ' + ephClear({}) + ' 条'); process.exit(0); }
+    if (sub === 'gc') { const n2 = ephGc(); const total = (typeof STARTUP_GC === 'number' ? STARTUP_GC : 0) + n2; console.log('清理过期 ' + total + ' 条' + (STARTUP_GC ? '（含启动时 ' + STARTUP_GC + ' 条）' : '')); process.exit(0); }
+    if (sub === 'stat') { console.log(JSON.stringify(ephStats(), null, 2)); process.exit(0); }
+    console.error('eph 子命令：list / add / rm / clear / gc / stat'); process.exit(2);
+  }
+
   usage(); process.exit(2);
 } catch (e) {
   console.error('ERR ' + (e && e.message ? e.message : String(e)));
   process.exit(1);
 }
+
+

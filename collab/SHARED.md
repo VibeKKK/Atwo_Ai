@@ -401,3 +401,34 @@ C protected 动 authority   → rank2 审被拒（protected 级）
 - Trae 「自动开新对话」实测不稳（新对话后输入框需重新聚焦，Enter 不提交）→ 降级为 opt-in `ORCH_TRAE_NEW_CHAT=1`；同时加 **45 秒 `ESTALE` 快速失败**，把「会话满 / 答案与上轮相同」这类判不出的情况从干等 4 分钟变成 45 秒明确报错。
 
 名册纠偏（§14 的 rank3）：执行层只算**真能派活**的 `trae` + `codebuddy`。`workbuddy` 只提供模型额度，5.11.2 更新后丢弃 `--remote-debugging-port`、内部只有 `/api/_evlog` 私有路由，没有对话接口 → 不计入执行层，等方案 C（逆向 app.asar）真通了再写回。
+
+## §16 2026-11-13 20:05 · 临时共享能力（ephemeral）· 用户新增需求
+
+用户令：`能不能再加入一个功能就是类似于"共享插件"和工具以及skill等，这些共享是暂时性的就是这个会话结束就消失的那种，减少占用`
+
+**做法**：`lib/ephemeral.mjs`（新，约 160 行，零依赖）+ `orchestra.mjs eph` 子命令 + 插件第 6 个工具 `orchestra_ephemeral`。
+
+| 特性 | 实现 |
+|---|---|
+| 不污染全局 | 不写 `package.json` / `bundles` / `~/.dsh/skills`，清单只在 `memory/.ephemeral.json`（已 gitignore） |
+| 不占常驻上下文 | 只在派活那一刻拼一段 `[临时能力]`（≤1200 字符）；要正文才用 `ask --skill <名字>` 按需读（默认截 3000 字符） |
+| 会话结束即消失 | TTL 默认 8 小时（`--ttl` 可调、下限 60 秒），每次 orchestra 启动跑一次 gc；`eph clear` 立刻清本会话 |
+| 四种类别 | `plugin` / `tool` / `skill` / `file` |
+
+**用法**
+```
+node orchestra.mjs eph add skill api-testing --note "接口测试临时用"
+node orchestra.mjs eph add tool zipalign --file C:/Users/kkk/Tools/android/zipalign.exe
+node orchestra.mjs eph add plugin dsh-raw-html-v2 --note "只在出 HTML 卡时用"
+node orchestra.mjs eph list | rm <名> | clear | gc | stat
+node orchestra.mjs ask trae --skill api-testing "按这个技能做接口测试"
+node orchestra.mjs ask trae --dry "..."      # 只看将要发出的完整 prompt（0 token）
+```
+
+**实测**
+- add 3 条 → list 正常显示类别/剩余分钟/路径/说明
+- `ask --dry` 输出的 prompt 里确实出现 `[临时能力]` 三段；`--skill` 追加 `[技能正文 · api-testing · 已截断]`（源文件 5,152 字符 → 截到 3,000）
+- 过期项被 gc 清掉（造了 expiresAt 在过去的 ghost 记录 → `清理过期 1 条（含启动时 1 条）`）
+- 插件验证扩到 **18 项，全通过**（注册工具 6 个，含 `orchestra_ephemeral` 与 `provide('orchestra').ephemeral`）
+
+**踩的坑**：`import.meta.url` 的 `pathname` 会把空格变 `%20` 并带前导斜杠 → 拼出 `D:\D:\ai%20project\...`；必须 `fileURLToPath`。CLI 拆参是 `cmd, who, rest`，所以 `eph add ...` 里的 `add` 落在 `who` 上，参数组要把 who 拼回去，否则 `sub` 会变成 `skill`。

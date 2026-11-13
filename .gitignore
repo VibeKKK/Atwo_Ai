@@ -9,3 +9,5 @@ memory/PR_LOG.md
 .locks/
 memory/budget.json
 memory/log.jsonl
+memory/.ephemeral.json
+memory/.ephemeral.json.tmp
