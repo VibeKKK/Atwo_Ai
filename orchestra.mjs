@@ -30,6 +30,7 @@ import { preflightTrae } from './lib/preflight.mjs';
 import { check as budgetCheck, record as budgetRecord, report as budgetReport, usedToday } from './lib/budget.mjs';
 import { start as prStart, finish as prFinish } from './pr.mjs';
 import { loadTasks, buildBatchPrompt, splitResults } from './lib/batch.mjs';
+import { runSwarm, loadSwarmTasks, parseSlots, renderReport, fmtMs, routeTask, listRuns, DEFAULT_SLOTS } from './lib/swarm.mjs';
 import { assemble, renderReport as renderBudget } from './lib/prompt.mjs';
 import { add as ephAdd, list as ephList, remove as ephRemove, clear as ephClear, gc as ephGc, briefBlock as ephBrief, readSkill as ephReadSkill, stats as ephStats, KINDS as EPH_KINDS } from './lib/ephemeral.mjs';
 
@@ -87,6 +88,13 @@ function usage() {
   duo <agentA> <agentB> "p"  同题并行派给两个 agent，对比耗时与产出
   batch <agent> <任务源>      N 个小任务压进一次调用（省掉 N-1 份固定开销）
                              任务源：tasks.md 文件 / "甲|||乙|||丙" / - 开头的行
+  top [n]                     吞吐看板：每批的墙钟 vs 串行，并行到底省了多少
+  swarm <任务源> [--flags]    N 个独立任务跨 agent 并行跑（吞吐最高的一档）
+                             --agent auto|trae|codebuddy   指定/自动分配
+                             --slots trae=1,codebuddy=6    各路并发数
+                             --out report.md               报告落到文件
+                             --resume                      接着上次没跑完的
+                             --no-switch                   失败不换路重试
   stats                      效率看板：次数/成功率/均耗时/均字符/token/成本
   budget                     今天的额度账（调用次数 / token / 剩余）
   health                     谁活着、谁占着锁、还剩多少额度
@@ -196,7 +204,7 @@ if (cmd === 'memory') {
     process.exit(0);
   }
 
-const NO_AGENT_CMDS = ['eph','ctx','duo','stats','auto','pick','doctor','probe','budget','health','list'];
+const NO_AGENT_CMDS = ['eph','ctx','duo','stats','auto','pick','doctor','probe','budget','health','list','swarm','top'];
 const needsAgent = !NO_AGENT_CMDS.includes(cmd);
 let agent = REGISTRY[who];
 let effectiveWho = who;
@@ -338,7 +346,7 @@ async function dispatch(kindLabel, rawPrompt, extra = {}) {
 
   // 锁池：trae 恒为 1 路（只有一个 Agent 页面，并发会互相污染回答）；
   // codebuddy 是独立 CLI 进程，可以开多路，否则等于自废吞吐。
-  const slots = Number(process.env['ORCH_SLOTS_' + name] || (name === 'codebuddy' ? 2 : 1)) || 1;
+  const slots = Number(process.env['ORCH_SLOTS_' + name] || (name === 'codebuddy' ? 6 : 1)) || 1;
   const runOnce = (p) => withLockPool(name, slots, () => withTimeout(
     () => ag.ask(p, { timeoutMs: TASK_TIMEOUT_MS }),
     TASK_TIMEOUT_MS + 20000, name
@@ -605,6 +613,29 @@ try {
     const cbOk = fs.existsSync(cfg.codebuddyCli);
     line(ok(cbOk), 'codebuddy CLI', cbOk ? cfg.codebuddyCli : `不存在：${cfg.codebuddyCli}（当前来源：${src.codebuddyCli}）`);
 
+    // codebuddy 登录态（启发式，2026-11-14 rank2 加）
+    // 官方 CLI 只有 config/mcp/sandbox/plugin/project/doctor/update/install/cleanup/daemon/ps/logs/attach，
+    // 没有 auth status / whoami；凭据落在 ~/.codebuddy/local_storage/entry_*.info 且是加密的，
+    // 读不出 expiresAt。所以这里只能看「凭据文件最近一次活跃时间」：
+    //   · 一个文件都没有 → 肯定没登录
+    //   · 长期没动过 → 要么很久没派活，要么 token 僵死，提示重登
+    // 真判有效性只有跑一次最小 ask（每次固定约 7.6K input token），不适合放进 doctor。
+    {
+      const lsDir = path.join(process.env.USERPROFILE || 'C:\\Users\\kkk', '.codebuddy', 'local_storage');
+      let lastTs = 0, nFiles = 0;
+      try {
+        for (const f of fs.readdirSync(lsDir)) {
+          if (!f.endsWith('.info')) continue;
+          nFiles++;
+          try { const st = fs.statSync(path.join(lsDir, f)); if (st.mtimeMs > lastTs) lastTs = st.mtimeMs; } catch { }
+        }
+      } catch { }
+      const ageDays = lastTs ? Math.floor((Date.now() - lastTs) / 86400000) : -1;
+      if (!nFiles) line('✗', 'codebuddy 登录态', `找不到凭据文件（${lsDir}）→ 跑一次 codebuddy --serve 在 Web UI 里登录`);
+      else if (ageDays > 14) line('·', 'codebuddy 登录态', `凭据 ${nFiles} 个文件，最近活跃 ${ageDays} 天前 → 建议重登确认（CLI 无 auth status，凭据加密读不到过期时间）`);
+      else line('✓', 'codebuddy 登录态', `凭据 ${nFiles} 个文件，${ageDays <= 0 ? '今天' : ageDays + ' 天前'}活跃过`);
+    }
+
     let dirty = '';
     try { dirty = execSync('git status --porcelain', { encoding: 'utf8', windowsHide: true }).trim(); } catch { }
     line(!dirty ? '✓' : '·', '仓库', !dirty ? '工作区干净' : `有 ${dirty.split('\n').length} 处未提交改动`);
@@ -732,6 +763,92 @@ try {
         chars: raw.length, secs: Number(secs), items: items.length,
       });
     } catch { /* 记账失败不挡结果 */ }
+    process.exit(0);
+  }
+
+  // ---- swarm：N 个独立任务跨 agent 并行，榨干每一路并发 ----
+  // 为什么这是吞吐最高的一档：单件派活写 prompt + 等 + 验收三份开销摊在一件事上是亏的；
+  // swarm 把这些开销摊到 N 件事上，并且 trae(1 路快) 与 codebuddy(6 路准) 两条流水线同时跑。
+  if (cmd === 'swarm') {
+    const argv = [who, ...rest].filter(x => x !== undefined);
+    const flags = { mode: 'auto', slotsSpec: '', out: '', resume: false, switchOnFail: true };
+    const words = [];
+    for (let i = 0; i < argv.length; i++) {
+      const a = argv[i];
+      if (a === '--agent') flags.mode = String(argv[++i] || 'auto').toLowerCase();
+      else if (a === '--slots') flags.slotsSpec = argv[++i] || '';
+      else if (a === '--out') flags.out = argv[++i] || '';
+      else if (a === '--resume') flags.resume = true;
+      else if (a === '--no-switch') flags.switchOnFail = false;
+      else if (a.startsWith('--')) { console.error('未知参数 ' + a); process.exit(2); }
+      else words.push(a);
+    }
+    const src = words.join(' ').trim();
+    if (!src) { console.error('用法: swarm <tasks.md | "甲|||乙"> [--agent auto] [--slots trae=1,codebuddy=6] [--out r.md] [--resume]'); process.exit(2); }
+    const tasks = loadSwarmTasks(src);
+    if (!tasks.length) { console.error('没解析出任务'); process.exit(2); }
+    const slots = parseSlots(flags.slotsSpec);
+    const plan = {};
+    for (const t of tasks) {
+      const a = routeTask(t.text, flags.mode);
+      plan[a] = (plan[a] || 0) + 1;
+    }
+    console.error('[swarm] ' + tasks.length + ' 个任务  分配：' + Object.entries(plan).map(([k, v]) => k + '×' + v).join('  ') + '  并发：' + Object.entries(slots).map(([k, v]) => k + '=' + v).join(','));
+    const onProgress = (ev) => {
+      const t = new Date().toISOString().slice(11, 19);
+      if (ev.type === 'start') console.error('[' + t + '] ▶ #' + ev.id + ' ' + ev.agent + ' 路' + ev.slot + '  ' + String(ev.text).replace(/\s+/g, ' ').slice(0, 44));
+      else if (ev.type === 'done') console.error('[' + t + '] ' + (ev.item.status === 'done' ? '✓' : '✗') + ' #' + ev.item.id + ' ' + ev.item.agent + ' ' + fmtMs(ev.item.elapsedMs) + '  进度 ' + ev.done + '/' + ev.total);
+      else if (ev.type === 'retry') console.error('[' + t + '] ↻ #' + ev.id + ' ' + ev.from + '→' + ev.to + ' 换路（' + String(ev.error).slice(0, 70) + '）');
+      else if (ev.type === 'split') console.error('[' + t + '] ⇄ trae 会话上限 ' + ev.limit + '，超出的 ' + ev.count + ' 个任务改派给 ' + ev.to);
+    };
+    const t0 = Date.now();
+    let out = null;
+    try {
+      out = await runSwarm(tasks, {
+        mode: flags.mode, slots, resume: flags.resume, taskSource: src,
+        switchOnFail: flags.switchOnFail,
+        dispatchFn: (text, extra) => dispatch('swarm', text, extra),
+        onProgress,
+      });
+    } catch (e) {
+      console.error('ESWARMFAIL ' + (e && e.message ? e.message : e));
+      process.exit(3);
+    }
+    const wall = ((Date.now() - t0) / 1000).toFixed(1);
+    const okN = out.results.filter(r => r.status === 'done').length;
+    const rep = renderReport(src, out);
+    console.error('[swarm] 完成 ' + okN + '/' + out.results.length + '，墙钟 ' + wall + 's，产物在 ' + out.dir);
+    if (flags.out) {
+      try { fs.writeFileSync(flags.out, rep, 'utf8'); console.error('[swarm] 报告已写入 ' + flags.out); } catch (e) { console.error('[swarm] 写报告失败：' + e.message); }
+    } else {
+      console.log(rep);
+    }
+    process.exit(okN === out.results.length ? 0 : 1);
+  }
+
+  // ---- top：吞吐看板。看清「并行到底省了多少」这件事，靠的是数字不是感觉。 ----
+  // 关键指标是提速比 = 串行耗时之和 / 墙钟。低于 1.5 说明这一批并行没吃满（任务太少或分配不均）。
+  if (cmd === 'top') {
+    const runs = listRuns(Number(who) || 20);
+    if (!runs.length) {
+      console.log('还没有 swarm 批次。先跑一批：node orchestra.mjs swarm tasks.md');
+      process.exit(0);
+    }
+    const pad = (s, n) => { const t = String(s); return t + ' '.repeat(Math.max(0, n - t.length)); };
+    console.log('批次时间              任务  成功   墙钟      串行     提速  分配');
+    let n = 0, ok = 0, wall = 0, serial = 0;
+    for (const r of runs) {
+      const when = new Date(r.endedAt || 0).toISOString().slice(5, 16).replace('T', ' ');
+      const speed = r.wallMs ? (r.serialMs / r.wallMs) : 1;
+      const plan = Object.entries(r.plan || {}).map(([k, v]) => k + '×' + v).join(' ');
+      console.log(pad(when, 20) + pad(r.tasks, 6) + pad(r.ok, 6) + pad(fmtMs(r.wallMs), 10) + pad(fmtMs(r.serialMs), 9) + pad(speed.toFixed(2) + '×', 6) + plan);
+      n += r.tasks; ok += r.ok; wall += r.wallMs || 0; serial += r.serialMs || 0;
+    }
+    console.log('');
+    console.log('合计 ' + runs.length + ' 批 / ' + n + ' 个任务 / 成功 ' + ok + '（' + (n ? Math.round(ok / n * 100) : 0) + '%）');
+    console.log('串行合计 ' + fmtMs(serial) + ' → 并行墙钟合计 ' + fmtMs(wall) + '，节省 ' + fmtMs(Math.max(0, serial - wall)) + '，平均提速 ' + (wall ? (serial / wall).toFixed(2) : '1.00') + '×');
+    console.log('');
+    console.log('提示：提速比低于 1.5 说明并行没吃满 —— 多半是任务太少、或全都落到了同一个慢 agent 上。');
     process.exit(0);
   }
 
