@@ -52,7 +52,7 @@ function audit(line) {
     fs.appendFileSync(AUDIT_FILE, '- ' + stamp + '  ' + line + '\n', 'utf8');
     // 审计本身也要进历史，但绝不能把工作区留脏——否则下一次 approve/undo
     // 会被自己的写入拦住（踩过一次）。这里只提交这一个文件。
-    try { commitPaths('docs(pr): 审计 ' + line.split('`')[1] || '状态变化', ['memory/PR_LOG.md']); } catch { }
+    try { commitPaths('docs(pr): 审计 ' + (line.split('`')[1] || '状态变化'), ['memory/PR_LOG.md']); } catch { }
   } catch { /* 审计写失败不影响主流程 */ }
 }
 
