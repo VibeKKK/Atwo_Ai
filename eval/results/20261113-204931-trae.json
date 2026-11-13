@@ -1,0 +1,59 @@
+{
+  "ts": "20261113-204931",
+  "agent": "trae",
+  "total": 3,
+  "pass": 0,
+  "rate": 0,
+  "durationMs": 41013,
+  "avgMs": 13670,
+  "rows": [
+    {
+      "id": "py-top-lnk",
+      "agent": "trae",
+      "pass": false,
+      "ms": 13722,
+      "err": "ERR 回车没发出去，输入框还留着文字",
+      "checks": [
+        {
+          "name": "派活",
+          "ok": false,
+          "detail": "ERR 回车没发出去，输入框还留着文字"
+        }
+      ],
+      "chars": 0,
+      "text": ""
+    },
+    {
+      "id": "py-dedup-keep-order",
+      "agent": "trae",
+      "pass": false,
+      "ms": 13631,
+      "err": "ERR 回车没发出去，输入框还留着文字",
+      "checks": [
+        {
+          "name": "派活",
+          "ok": false,
+          "detail": "ERR 回车没发出去，输入框还留着文字"
+        }
+      ],
+      "chars": 0,
+      "text": ""
+    },
+    {
+      "id": "py-retry-decorator",
+      "agent": "trae",
+      "pass": false,
+      "ms": 13656,
+      "err": "ERR 回车没发出去，输入框还留着文字",
+      "checks": [
+        {
+          "name": "派活",
+          "ok": false,
+          "detail": "ERR 回车没发出去，输入框还留着文字"
+        }
+      ],
+      "chars": 0,
+      "text": ""
+    }
+  ]
+}

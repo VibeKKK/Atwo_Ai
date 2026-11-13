@@ -1,0 +1,59 @@
+{
+  "ts": "20261113-204153",
+  "agent": "trae",
+  "total": 3,
+  "pass": 0,
+  "rate": 0,
+  "durationMs": 73678,
+  "avgMs": 24559,
+  "rows": [
+    {
+      "id": "py-top-lnk",
+      "agent": "trae",
+      "pass": false,
+      "ms": 47298,
+      "err": "ERR Trae 45 秒内没有产生新回合（会话可能已满或答案与上一轮完全相同）。建议：在 Trae 里开新对话，或换个问法；也可设 ORCH_TRAE_NEW_CHAT=1 让管道自动开新对话（该模式仍在调试）。",
+      "checks": [
+        {
+          "name": "派活",
+          "ok": false,
+          "detail": "ERR Trae 45 秒内没有产生新回合（会话可能已满或答案与上一轮完全相同）。建议：在 Trae 里开新对话，或换个问法；也可设 ORCH_TRAE_NEW_CHAT=1 让管道自动开新对话（该模式仍在调试）。"
+        }
+      ],
+      "chars": 0,
+      "text": ""
+    },
+    {
+      "id": "py-dedup-keep-order",
+      "agent": "trae",
+      "pass": false,
+      "ms": 14534,
+      "err": "ERR 回车没发出去，输入框还留着文字",
+      "checks": [
+        {
+          "name": "派活",
+          "ok": false,
+          "detail": "ERR 回车没发出去，输入框还留着文字"
+        }
+      ],
+      "chars": 0,
+      "text": ""
+    },
+    {
+      "id": "py-retry-decorator",
+      "agent": "trae",
+      "pass": false,
+      "ms": 11844,
+      "err": "ERR 回车没发出去，输入框还留着文字",
+      "checks": [
+        {
+          "name": "派活",
+          "ok": false,
+          "detail": "ERR 回车没发出去，输入框还留着文字"
+        }
+      ],
+      "chars": 0,
+      "text": ""
+    }
+  ]
+}

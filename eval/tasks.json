@@ -1,0 +1,186 @@
+{
+  "version": 1,
+  "note": "固定任务集。改这里要同时更新 baseline，否则历史分数不可比。",
+  "tasks": [
+    {
+      "id": "py-top-lnk",
+      "kind": "code",
+      "lang": "python",
+      "prompt": "写一个 Python 函数 top_lnk(root, n)：递归找 root 下所有 .lnk 文件，按文件大小从大到小返回前 n 个 (size, path) 元组。只用标准库。",
+      "unit": "import os,tempfile\nr=tempfile.mkdtemp()\nopen(os.path.join(r,'a.lnk'),'wb').write(b'x'*10)\nopen(os.path.join(r,'b.lnk'),'wb').write(b'x'*99)\nopen(os.path.join(r,'c.txt'),'wb').write(b'x'*999)\nout=top_lnk(r,2)\nassert len(out)==2, out\nassert out[0][0]==99 and out[0][1].endswith('b.lnk'), out\nprint('UNIT-OK')",
+      "include": ["def top_lnk"],
+      "forbid": ["import pandas", "import numpy"]
+    },
+    {
+      "id": "py-dedup-keep-order",
+      "kind": "code",
+      "lang": "python",
+      "prompt": "写 Python 函数 dedup(items)：去掉重复元素但保持首次出现顺序，支持不可哈希元素（如 dict）。只用标准库。",
+      "unit": "assert dedup([1,2,1,3])==[1,2,3]\nassert dedup([{'a':1},{'a':1},{'a':2}])==[{'a':1},{'a':2}]\nprint('UNIT-OK')",
+      "include": ["def dedup"]
+    },
+    {
+      "id": "py-retry-decorator",
+      "kind": "code",
+      "lang": "python",
+      "prompt": "写一个 Python 装饰器 retry(times=3, delay=0)，捕获异常重试，全部失败则抛出最后一个异常。不要用第三方库。",
+      "unit": "c={'n':0}\n@retry(times=3, delay=0)\ndef f():\n    c['n']+=1\n    if c['n']<3: raise ValueError('boom')\n    return 'ok'\nassert f()=='ok' and c['n']==3, c\nprint('UNIT-OK')",
+      "include": ["def retry"]
+    },
+    {
+      "id": "py-csv-dict",
+      "kind": "code",
+      "lang": "python",
+      "prompt": "写 Python 函数 read_csv_dict(path)：用 csv.DictReader 读文件，返回 list[dict]，并把全为数字的字段转成 int 或 float。空值保持空字符串。",
+      "unit": "import tempfile,os\np=os.path.join(tempfile.mkdtemp(),'t.csv')\nopen(p,'w',encoding='utf-8').write('a,b\\n1,2.5\\n3,\\n')\nrows=read_csv_dict(p)\nassert rows[0]['a']==1 and abs(rows[0]['b']-2.5)<1e-9, rows\nassert rows[1]['b']=='', rows\nprint('UNIT-OK')",
+      "include": ["DictReader"]
+    },
+    {
+      "id": "py-bisect-insort",
+      "kind": "code",
+      "lang": "python",
+      "prompt": "写 Python 函数 insert_sorted(arr, x)：把 x 插入到已排序列表 arr 的正确位置（不改变原列表），用二分查找实现。返回新列表。",
+      "unit": "assert insert_sorted([1,3,5],4)==[1,3,4,5]\nassert insert_sorted([],2)==[2]\nassert insert_sorted([1,2],2)==[1,2,2]\nprint('UNIT-OK')",
+      "include": ["def insert_sorted"]
+    },
+    {
+      "id": "js-clamp",
+      "kind": "code",
+      "lang": "javascript",
+      "prompt": "写 JavaScript 函数 clamp(n, min, max)：把 n 限制在 [min,max] 内。若 min>max 则先交换。返回数字。",
+      "include": ["function clamp", "Math"],
+      "minChars": 40
+    },
+    {
+      "id": "js-debounce",
+      "kind": "code",
+      "lang": "javascript",
+      "prompt": "写一个 JavaScript debounce(fn, wait) 实现，返回包装后的函数，支持最后一次调用后 wait 毫秒才执行。不要用第三方库。",
+      "include": ["setTimeout", "clearTimeout"]
+    },
+    {
+      "id": "py-log-group",
+      "kind": "code",
+      "lang": "python",
+      "prompt": "写 Python 函数 group_errors(lines)：输入日志行列表，把含 ERROR 或 FATAL 的行按错误消息（去掉时间戳前缀）分组，返回 dict[str, list[str]]，值为原始整行。",
+      "minChars": 80,
+      "include": ["def group_errors"]
+    },
+    {
+      "id": "py-argv-cli",
+      "kind": "code",
+      "lang": "python",
+      "prompt": "写 Python 脚本 main()：用 argparse 接受 --dir（必填）与 --top（默认 5），扫描目录下所有文件按大小降序打印前 N 个，格式 'size\\tpath'。带 if __name__ == '__main__' 保护。",
+      "unit": "import argparse,os,tempfile,sys\nprint('UNIT-OK')",
+      "include": ["argparse", "__main__"]
+    },
+    {
+      "id": "py-regex-parse",
+      "kind": "code",
+      "lang": "python",
+      "prompt": "写 Python 函数 parse_kv(s)：从形如 'a=1; b=hello; c=3.5' 的字符串里解析出 dict，值能转数字就转数字，否则保持字符串，忽略空白与空段。",
+      "unit": "r=parse_kv('a=1; b=hello;  c=3.5;')\nassert r=={'a':1,'b':'hello','c':3.5}, r\nprint('UNIT-OK')",
+      "include": ["def parse_kv"]
+    },
+    {
+      "id": "py-safe-int",
+      "kind": "code",
+      "lang": "python",
+      "prompt": "写 Python 函数 safe_int(x, default=0)：把任意输入转 int，失败（含 None、空串、非数字串）返回 default，不要抛异常。",
+      "unit": "assert safe_int('12')==12 and safe_int(None,7)==7 and safe_int('x')==0 and safe_int('')==0\nprint('UNIT-OK')",
+      "include": ["def safe_int"]
+    },
+    {
+      "id": "py-chunk",
+      "kind": "code",
+      "lang": "python",
+      "prompt": "写 Python 生成器函数 chunk(seq, size)：把序列切成大小为 size 的块，最后一块可以不足。size<=0 抛 ValueError。",
+      "unit": "assert list(chunk([1,2,3,4,5],2))==[[1,2],[3,4],[5]]\ntry:\n    list(chunk([1],0)); print('SHOULD-FAIL')\nexcept ValueError:\n    print('UNIT-OK')",
+      "include": ["def chunk"]
+    },
+    {
+      "id": "prose-review-orchestra",
+      "kind": "prose",
+      "prompt": "下面这段代码有什么问题？请给 3 条具体建议，并说明每条为什么重要：\n\nfor i in range(len(arr)):\n    for j in range(len(arr)-1-i):\n        if arr[j] > arr[j+1]:\n            arr[j], arr[j+1] = arr[j+1], arr[j]",
+      "minChars": 260,
+      "include": ["复杂|O\\(n|性能", "可读|命名|swap|交换"]
+    },
+    {
+      "id": "prose-explain-json",
+      "kind": "prose",
+      "prompt": "用 5 句话解释：为什么把大模型输出强制成 JSON 契约，比让它自由发挥更可靠？要提到解析失败、重试、可校验三个点。",
+      "minChars": 240,
+      "include": ["解析", "重试|retry", "校验|验证"]
+    },
+    {
+      "id": "prose-tradeoff",
+      "kind": "prose",
+      "prompt": "对比 SQLite 与 Postgres 在单机小型工具里的取舍，给 4 条结论，每条一句话，最后一行给出你的推荐。",
+      "minChars": 240,
+      "include": ["SQLite", "Postgres"]
+    },
+    {
+      "id": "prose-cost",
+      "kind": "prose",
+      "prompt": "一个 CLI 每次调用固定消耗 7600 input token（自带 system prompt），任务本身只占 200 token。请解释为什么把 5 个小任务合并成一次调用是省的，并估算省多少倍。",
+      "minChars": 200,
+      "include": ["7600|7,600", "合并|批量|batch"]
+    },
+    {
+      "id": "prose-bug-triage",
+      "kind": "prose",
+      "prompt": "现象：某个脚本偶尔静默退出，退出码 0，什么都没输出。列出 3 个最可能的原因，并说明各自怎么验证（要具体命令或代码）。",
+      "minChars": 260,
+      "include": ["退出|exit", "验证|复现|日志"]
+    },
+    {
+      "id": "json-extract-fields",
+      "kind": "json",
+      "prompt": "从这句话里抽取字段，只输出 JSON，不要解释：\"联系人 张三，电话 13800138000，下周三下午三点在上海虹桥见面\"。字段：name, phone, time, place。",
+      "shape": { "keys": ["name", "phone"] }
+    },
+    {
+      "id": "json-plan-steps",
+      "kind": "json",
+      "prompt": "把「给一个 Python 脚本加单元测试」拆成 4 步，只输出 JSON：{\"steps\":[{\"id\":1,\"action\":\"..\",\"done_when\":\"..\"}]}。",
+      "shape": { "keys": ["steps"] }
+    },
+    {
+      "id": "json-error-classify",
+      "kind": "json",
+      "prompt": "给这条报错分类，只输出 JSON：ModuleNotFoundError: No module named 'yaml'。字段：category（取值 import/runtime/syntax/network）, fix（一句话）, need_install（true/false）。",
+      "shape": { "keys": ["category", "fix", "need_install"] }
+    },
+    {
+      "id": "py-file-walk-count",
+      "kind": "code",
+      "lang": "python",
+      "prompt": "写 Python 函数 count_ext(root)：递归统计 root 下各扩展名文件数量，返回 dict[str, int]，扩展名小写、无扩展名用空字符串。",
+      "unit": "import os,tempfile\nr=tempfile.mkdtemp()\nfor n in ['a.txt','b.TXT','c.py','noext']: open(os.path.join(r,n),'w').close()\nd=count_ext(r)\nassert d.get('.txt')==2 and d.get('.py')==1 and d.get('')==1, d\nprint('UNIT-OK')",
+      "include": ["def count_ext", "walk|scandir"]
+    },
+    {
+      "id": "py-lock-stale",
+      "kind": "code",
+      "lang": "python",
+      "prompt": "写 Python 函数 is_stale(lock_path, stale_seconds=600)：读 JSON 锁文件里的 ts（epoch 毫秒），超过 stale_seconds 或文件缺失/损坏都返回 True，否则 False。",
+      "unit": "import json,os,tempfile,time\np=os.path.join(tempfile.mkdtemp(),'l.json')\njson.dump({'ts':int(time.time()*1000)},open(p,'w'))\nassert is_stale(p) is False\njson.dump({'ts':1},open(p,'w'))\nassert is_stale(p) is True\nassert is_stale('/no/such/file') is True\nprint('UNIT-OK')",
+      "include": ["def is_stale"]
+    },
+    {
+      "id": "prose-adapter-contract",
+      "kind": "prose",
+      "prompt": "如果要让别人为你写一个新 agent 适配器，你会要求它实现哪几个字段/方法？列成清单，说明每个字段的作用，并指出哪个字段最容易被写错。",
+      "minChars": 300,
+      "include": ["ask", "返回值|返回"]
+    },
+    {
+      "id": "py-batch-split",
+      "kind": "code",
+      "lang": "python",
+      "prompt": "写 Python 函数 split_batches(items, size)：把列表按 size 切分成多个批次，返回 list[list]，size<=0 抛 ValueError，保持原顺序。",
+      "unit": "assert split_batches([1,2,3,4,5],2)==[[1,2],[3,4],[5]]\nassert split_batches([],3)==[]\nprint('UNIT-OK')",
+      "include": ["def split_batches"]
+    }
+  ]
+}

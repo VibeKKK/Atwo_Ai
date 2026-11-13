@@ -111,22 +111,21 @@ async function clearInput(c) {
 
 /** 把文字写进输入框：派发 paste 事件（Lexical 只认这条），然后轮询等 DOM 更新 */
 async function typeInto(c, text) {
-  const payload = JSON.stringify(text);
-  const dispatched = await c.js(`(() => {
-    const e = ${PICK_EDIT};
-    if (!e) return 'NO_EDITABLE';
-    e.focus();
-    const sel = window.getSelection();
-    const range = document.createRange();
-    range.selectNodeContents(e);
-    sel.removeAllRanges();
-    sel.addRange(range);
-    const dt = new DataTransfer();
-    dt.setData('text/plain', ${payload});
-    e.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
-    return 'DISPATCHED';
-  })()`);
-  if (dispatched === 'NO_EDITABLE') throw new Error('Trae 输入框不见了（面板切走了？）');
+  // 用 CDP 真键盘输入（Input.insertText），不用合成 paste 事件：
+  // 合成事件只改 DOM，不更新 Slate 内部状态，导致随后的 Enter 不触发提交。
+  const ok = await focusEditor(c);
+  if (!ok) throw new Error('Trae 输入框不见了（面板切走了？）');
+  try { await clearInput(c); } catch { }
+  await focusEditor(c);
+  const lines = String(text).split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    if (i > 0) {
+      // Shift+Enter 换行（纯 Enter 会提交）
+      await c.call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13, modifiers: 8 });
+      await c.call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13, modifiers: 8 });
+    }
+    if (lines[i]) await c.call('Input.insertText', { text: lines[i] });
+  }
 
   const norm = (s) => String(s || '').replace(/\r/g, '').replace(/\n+/g, '\n').trim();
   const want = norm(text).slice(-30);
@@ -136,7 +135,7 @@ async function typeInto(c, text) {
     last = norm(await readEditor(c));
     if (last.includes(want)) return last;
   }
-  return last;
+  throw new Error('输入没进去（读回不匹配）：' + last.slice(0, 60));
 }
 
 /** 等某个 CDP 目标出现（Trae 刚启动时窗口还没建，直接 attach 会 no target） */
@@ -221,9 +220,44 @@ async function focusEditor(c) {
   return true;
 }
 
+/**
+ * 点进任务列表里的某一条（发送后有些情况下会停留在「任务列表」而不是对话页）。
+ * needle 是提示词结尾，用来优先命中刚发出去的那条；找不到就点第一条。
+ */
+async function openTaskWith(c, needle) {
+  const r = await c.js(`(() => {
+    const items = [...document.querySelectorAll("div.taskItem, div.taskItemWrapper")];
+    if (!items.length) return "NO_ITEM";
+    const n = ${JSON.stringify(String(needle || ""))};
+    let hit = n ? items.find(e => ((e.innerText || "").includes(n))) : null;
+    if (!hit) hit = items[0];
+    hit.click();
+    return "CLICKED";
+  })()`);
+  await sleep(1200);
+  return r;
+}
 async function pressEnter(c) {
-  await c.call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
-  await c.call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+  // 实测（2026-11-13，_probe_enter.mjs）：Trae 只认 keyDown + keyUp，不带 text；
+  // rawKeyDown+char 反而发不出去。另一个必要条件是**发送前重新聚焦**。
+  // 不要去找「发送」按钮点它——页面上有同名不同用途的按钮，点错会把输入框点没。
+  for (let round = 1; round <= 3; round++) {
+    try { await focusEditor(c); } catch { }
+    await sleep(120);
+    await c.call('Input.dispatchKeyEvent', {
+      type: 'keyDown', key: 'Enter', code: 'Enter',
+      windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13,
+    });
+    await c.call('Input.dispatchKeyEvent', {
+      type: 'keyUp', key: 'Enter', code: 'Enter',
+      windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13,
+    });
+    await sleep(250);
+    // 发送成功的判据：输入框只剩空白（实测会留一个 \n）
+    const cur = await readEditor(c).catch(() => null);
+    if (cur !== null && cur.replace(/[\s\u200b]/g, '') === '') return true;
+  }
+  return false;
 }
 
 /** 从新增区域里剥出 Trae 真正说的话：TRAE 标记之后、「由 AI 生成」之前 */
@@ -323,7 +357,7 @@ export async function askTrae(prompt, opts = {}) {
     // 基线必须在「输入框已写满、还没发送」这一刻取 —— 之前取会把残留草稿算进去
 
     const beforeText = await pageText(c);
-    const baseAns = await readAnswers(c);   // 发送前的回复容器数量（判断"是否新增一条"的基准）
+    let baseAns = await readAnswers(c);   // 发送前的回复容器数量（判断"是否新增一条"的基准）
     // Trae 的会话列表只保留最近若干条；接近上限后「回合数」不再增长，
     // 此时只有「文本指纹变化」可用 —— 同问题同答案会判不出来，需要开新对话。
     if (baseAns.turns >= 8) console.error('[提示] 当前会话已有 ' + baseAns.turns + ' 条回合（接近虚拟化上限），建议在 Trae 里开一个新对话以免判据失灵');
@@ -331,7 +365,7 @@ export async function askTrae(prompt, opts = {}) {
     await pressEnter(c);
 
     // 1) 确认发出去了：输入框被清空
-    const t0 = Date.now();
+    let t0 = Date.now();
     let sent = false;
     for (let i = 0; i < 40; i++) {
       await sleep(250);
@@ -339,6 +373,22 @@ export async function askTrae(prompt, opts = {}) {
       if (cur !== null && cur.replace(/[\s\u200b]/g, '') === '') { sent = true; break; }
     }
     if (!sent) throw new Error('回车没发出去，输入框还留着文字');
+
+    // 实测：发送后有时会停在「任务列表」页（div.taskItem），此时对话区的 SEL.turn 为 0，
+    // 不点进去就永远读不到答案（表现为 ESTALE）。点进去后基线清零，用「非空 + 稳定」判完成。
+    {
+      let inConv = await readAnswers(c);
+      for (let i = 0; i < 3 && inConv.turns === 0; i++) {
+        const clicked = await openTaskWith(c, tailWant).catch(() => 'ERR');
+        if (clicked === 'NO_ITEM') break;
+        await sleep(900);
+        inConv = await readAnswers(c);
+      }
+      if (inConv.turns > 0 && baseAns.turns === 0) {
+        baseAns = { turns: 0, text: '' };   // 进了新对话：把基线清空
+        t0 = Date.now();
+      }
+    }
 
     // 2) 等它干完
     // 判据只能看「最后一条助手回合的文本变了 + 内容稳定」。
@@ -348,6 +398,7 @@ export async function askTrae(prompt, opts = {}) {
     //     回合数到 5 就不再涨（实测卡在 turns=5(base 5)），此时回答其实已经到了。
     const DEBUG = process.env.ORCH_DEBUG_TRAE === '1';
     const HARD_TIMEOUT = timeoutMs;
+    let recovered = false;   // 本轮是否已经用过「开新对话重发」的恢复
     let lastText = '', stableSince = Date.now(), sawBusy = false, finished = false;
     while (Date.now() - t0 < HARD_TIMEOUT) {
       await sleep(700);
@@ -364,7 +415,28 @@ export async function askTrae(prompt, opts = {}) {
       // 快速失败：45 秒内既没新回合、文本也没变 —— 说明 Trae 没接这轮
       // （典型两种：会话已满到虚拟化上限、或答案与上一轮完全相同导致指纹不变）
       if (!active && Date.now() - t0 > 45000) {
-        const e2 = new Error('Trae 45 秒内没有产生新回合（会话可能已满或答案与上一轮完全相同）。建议：在 Trae 里开新对话，或换个问法；也可设 ORCH_TRAE_NEW_CHAT=1 让管道自动开新对话（该模式仍在调试）。');
+        // 自愈第一式：开新对话重发一次。会话到虚拟化上限或指纹撞车时这是唯一出路。
+        if (process.env.ORCH_TRAE_NO_RECOVER !== '1' && !recovered) {
+          recovered = true;
+          console.error('[恢复] 45 秒无新回合，自动开新对话重发一次');
+          try {
+            const nc2 = await clickNewTask({ port: opts.port ?? PORT });
+            if (!nc2.ok) console.error('[恢复] 开新对话失败：' + nc2.reason);
+            await sleep(900);
+            await focusEditor(c);
+            await clearInput(c);
+            const typed2 = await typeInto(c, prompt);
+            if (!String(typed2).includes(tailWant)) console.error('[恢复] 重发时写入不完整，仍继续尝试');
+            baseAns = await readAnswers(c);
+            await sleep(250);
+            await pressEnter(c);
+            t0 = Date.now();
+            continue;
+          } catch (e3) {
+            console.error('[恢复] 失败：' + e3.message);
+          }
+        }
+        const e2 = new Error('Trae 45 秒内没有产生新回合（会话已满或答案与上一轮完全相同，自动恢复也没救回来）。建议换问法；设 ORCH_TRAE_NO_RECOVER=1 可关闭自动恢复。');
         e2.code = 'ESTALE';
         throw e2;
       }
@@ -433,11 +505,14 @@ export async function askTrae(prompt, opts = {}) {
 // 给出多个候选比单点硬编码多活几轮，且 probe 能提前报警。
 export const SEL = {
   // 助手回合容器
-  turn: ['div.turn__agent-message', '[class*="turn__agent-message"]', '[data-testid*="agent-message"]'],
+  // 2026-11-13 实测：Trae 更新后对话区变成 solo-lite-chat-panel + message-list-cache-item，
+  // 旧的 turn__agent-message 已不存在；两个都留着，按顺序降级。
+  turn: ['div.message-list-cache-item', 'div.turn__agent-message', '[class*="turn__agent-message"]', '[data-testid*="agent-message"]'],
   // 回合内的 markdown 渲染容器（答案取最后一个）
   renderer: ['div.markdown-renderer', '[class*="markdown-renderer"]', '[class*="markdown-body"]'],
   // 输入框（可编辑区）
-  edit: ['div[contenteditable="true"]', '[contenteditable="true"]', 'textarea'],
+  // 首选类名：实测 Trae 某些时刻 contenteditable 属性选择器命中 0，类名更稳
+  edit: ['div.chat-input-v2-input-box-editable', 'div[contenteditable="true"]', '[contenteditable="true"]', 'textarea'],
   // 界面噪音行（stripUiChrome 用，整行匹配）
   chrome: ['@ 添加上下文', '完全访问', '正常模式', '深度思考', '发送', '停止', '复制'],
 };
