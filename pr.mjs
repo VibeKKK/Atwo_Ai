@@ -328,6 +328,12 @@ export function approve(id, opts = {}) {
     );
   }
   settleWorkspace();
+  // protected 级要求另一位总管知情：不阻塞合并（否则对方离线就永远合不了），
+  // 但必须留痕，事后能看出"这次谁不知道"。
+  if (gate.missingInformed.length) {
+    console.error('[审阅] 注意：' + gate.risk + ' 级改动，' + gate.missingInformed.join(', ') + ' 尚无知情记录（已记入审计）');
+    audit('`' + pr.id + '` warn      ' + gate.risk + ' 改动，' + gate.missingInformed.join(', ') + ' 未留知情记录');
+  }
   checkout(MAIN);
   const mergeSha = mergeNoFf(pr.branch, 'merge: ' + pr.id + ' ' + pr.title);
   pr.status = 'merged';
