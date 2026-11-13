@@ -44,9 +44,14 @@ const short = (v, n = 90) => {
   return s.length > n ? s.slice(0, n) + '…' : s;
 };
 const DB = flag('db', 'project');
+// 2026-11-14：机器可读输出。加 --json 后所有查询类命令只吐 JSON（人看的版本仍保留），
+// 便于别的 agent 或脚本直接消费，不用正则解析中文。
+const JSON_OUT = argv.includes('--json');
+const out = (obj) => { if (JSON_OUT) { console.log(JSON.stringify(obj, null, 2)); return true; } return false; };
 
 try {
   if (cmd === 'dbs') {
+    if (out({ ok: true, dbs: allDbStats() })) process.exit(0);
     for (const s of allDbStats()) {
       console.log(`\n[${s.db === 'project' ? '项目库' : '记忆库'}] ${s.db}   记录 ${s.records}  活跃行 ${s.liveRows}`);
       if (!s.agents.length) { console.log('  (空)'); continue; }
@@ -61,15 +66,17 @@ try {
     let parsed = raw;
     try { if (/^[{[]/.test(raw)) parsed = JSON.parse(raw); } catch { }
     const r = open(DB).put(table, key, parsed, { by: flag('by'), note: flag('note', '') });
-    console.log(`✓ [${r.db}] put ${table}/${key}  seq=${r.seq}  by=${r.by}`);
+    if (!out({ ok: true, op: 'put', db: r.db, table, key, seq: r.seq, by: r.by })) console.log(`✓ [${r.db}] put ${table}/${key}  seq=${r.seq}  by=${r.by}`);
   } else if (cmd === 'get') {
     const [table, key] = pos(1, 2);
     const r = open(DB).get(table, key);
-    if (!r) { console.log(`(${DB} 库中不存在)`); process.exit(1); }
-    console.log(JSON.stringify({ db: DB, key: r.key, val: r.val, by: r.by, ts: r.ts }, null, 2));
+    if (!r) { if (!out({ ok: false, code: 'ENOTFOUND', message: `${DB} 库中不存在 ${table}/${key}` })) console.log(`(${DB} 库中不存在)`); process.exit(1); }
+    out({ ok: true, db: DB, table, key: r.key, val: r.val, by: r.by, ts: r.ts });
+    if (!JSON_OUT) console.log(JSON.stringify({ db: DB, key: r.key, val: r.val, by: r.by, ts: r.ts }, null, 2));
   } else if (cmd === 'list') {
     const [table] = pos(1, 1);
     const rows = open(DB).list(table);
+    if (out({ ok: true, db: DB, table: table || null, count: rows.length, rows })) process.exit(0);
     if (!rows.length) { console.log(`(${DB} 库为空)`); process.exit(0); }
     for (const r of rows) console.log(`${r.key}\t${short(r.val)}\t[${r.by} ${r.ts.slice(11, 19)}]`);
     console.log(`共 ${rows.length} 行 · ${DB} 库`);
@@ -77,7 +84,7 @@ try {
     const [table, key] = pos(1, 2);
     if (table === undefined || key === undefined) throw new Error('用法：del <表> <键> [--db memory]');
     const r = open(DB).del(table, key, { by: flag('by'), note: flag('note', '') });
-    console.log(`✓ [${r.db}] del ${table}/${key}  seq=${r.seq}  by=${r.by}（逻辑删除，历史保留）`);
+    if (!out({ ok: true, op: 'del', db: r.db, table, key, seq: r.seq, by: r.by, note: '逻辑删除，历史保留' })) console.log(`✓ [${r.db}] del ${table}/${key}  seq=${r.seq}  by=${r.by}（逻辑删除，历史保留）`);
   } else if (cmd === 'log') {
     const rows = open(DB).log({
       sinceMs: sinceToMs(flag('since', '30m')),
@@ -85,27 +92,31 @@ try {
       table: flag('table'),
       limit: Number(flag('limit', 40)),
     });
+    if (out({ ok: true, db: DB, count: rows.length, rows })) process.exit(0);
     if (!rows.length) { console.log(`(${DB} 库这段时间没有记录)`); process.exit(0); }
     for (const r of rows) {
       console.log(`${r.ts.slice(11, 19)}  ${r.by.padEnd(18)} ${r.op === 'del' ? 'DEL' : 'PUT'}  ${r.table}/${r.key}  ${r.op === 'del' ? '' : short(r.val, 56)}${r.note ? '  · ' + r.note : ''}`);
     }
   } else if (cmd === 'tables') {
     const t = open(DB).tables();
+    if (out({ ok: true, db: DB, count: t.length, tables: t })) process.exit(0);
     if (!t.length) { console.log(`(${DB} 库还没有表)`); process.exit(0); }
     for (const x of t) console.log(`${x.table}\t${x.rows} 行`);
   } else if (cmd === 'stat') {
     const s = open(DB).stats();
+    if (out({ ok: true, ...s })) process.exit(0);
     console.log(`[${s.db}] 记录总数 ${s.records}   活跃行 ${s.liveRows}`);
     for (const a of s.agents) console.log(`  ${a.by.padEnd(20)} put ${String(a.puts).padEnd(5)} del ${String(a.dels).padEnd(5)} 最后 ${a.lastTs.replace('T', ' ').slice(0, 19)}`);
     for (const t of s.tables) console.log(`  [表] ${t.table}  ${t.rows} 行`);
   } else if (cmd === 'compact') {
     const r = open(DB).compact({ keepRecent: Number(flag('keep', 200)) });
-    console.log(`✓ [${r.db}] 已压缩：快照 ${r.snapshotRows} 行，各 journal 保留最近 ${r.keptTail} 条`);
+    if (!out({ ok: true, op: 'compact', ...r })) console.log(`✓ [${r.db}] 已压缩：快照 ${r.snapshotRows} 行，各 journal 保留最近 ${r.keptTail} 条`);
   } else {
     console.error('未知命令：' + cmd + '\n可用：put / get / list / del / log / tables / stat / compact / dbs');
     process.exit(2);
   }
 } catch (e) {
-  console.error('错误：' + e.message);
+  if (JSON_OUT) console.log(JSON.stringify({ ok: false, code: e.code || 'EUNKNOWN', message: e.message }, null, 2));
+  else console.error('错误：' + e.message);
   process.exit(1);
 }

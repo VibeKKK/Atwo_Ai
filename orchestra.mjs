@@ -120,6 +120,15 @@ const nowStr = () => {
 if (!cmd || cmd === 'help' || cmd === '--help') { usage(); process.exit(0); }
 
 if (cmd === 'list') {
+  // 2026-11-14：--json 便于别的 agent 直接消费（不用正则解析中文表格）
+  if (process.argv.includes('--json')) {
+    const rows = Object.entries(REGISTRY).map(([k, v]) => ({
+      name: k, kind: v.meta.kind, transport: v.meta.transport, port: v.meta.port,
+      strengths: v.meta.strengths, note: v.meta.note || null,
+    }));
+    console.log(JSON.stringify({ ok: true, count: rows.length, agents: rows }, null, 2));
+    process.exit(0);
+  }
   for (const [k, v] of Object.entries(REGISTRY)) {
     console.log(`${k}\t${v.meta.kind}\t${v.meta.transport}:${v.meta.port}\t${v.meta.strengths.join(' / ')}`);
   }
@@ -169,6 +178,7 @@ if (cmd === 'memory') {
   // ---- budget：今天的额度账（按 agent / 按天）----
   if (cmd === 'budget') {
     const rep = budgetReport();
+    if (process.argv.includes('--json')) { console.log(JSON.stringify({ ok: true, ...rep }, null, 2)); process.exit(0); }
     console.log('日期 ' + rep.date);
     console.log('agent	调用	失败	in tok	out tok	剩次数	剩token');
     for (const row of rep.rows) {
@@ -190,8 +200,22 @@ if (cmd === 'memory') {
     const traeUp = await portOpen(9223);
     const cbCli = path.join(process.env.USERPROFILE || 'C:\Users\kkk', 'Tools', 'codebuddy-cli', 'package', 'bin', 'codebuddy');
     const cbOk = fs.existsSync(cbCli) || fs.existsSync(cbCli + '.cmd') || fs.existsSync(cbCli + '.cmd');
-    console.log('agent	通道	活着	今天已用	剩次数');
     const locks = listLocks();
+    const healthRows = [];
+    for (const name of Object.keys(REGISTRY)) {
+      const u = usedToday(name);
+      const g = budgetCheck(name, 0);
+      const lock = locks.find((l) => l.name === name);
+      healthRows.push({ agent: name, channel: name === 'trae' ? (traeUp ? 'ok' : 'DOWN') : (cbOk ? 'ok' : 'DOWN'),
+        lock: lock ? 'BUSY(pid ' + lock.pid + ')' : 'idle', usedCalls: u.calls, leftCalls: g.left ? g.left.calls : null });
+    }
+    const lastRun = readLog(1)[0];
+    if (process.argv.includes('--json')) {
+      console.log(JSON.stringify({ ok: true, at: new Date().toISOString(), agents: healthRows,
+        lastRun: lastRun ? { agent: lastRun.agent, ok: !!lastRun.ok, seconds: Math.round((lastRun.elapsedMs || 0) / 1000), contract: lastRun.contract || null } : null }, null, 2));
+      process.exit(0);
+    }
+    console.log('agent	通道	活着	今天已用	剩次数');
     for (const name of Object.keys(REGISTRY)) {
       const up = name === 'trae' ? traeUp : cbOk;
       const u = usedToday(name);
@@ -549,6 +573,15 @@ try {
       if (e.cost && e.cost.estUsd) o.cost += Number(e.cost.estUsd);
       if (e.usage) { o.tin += e.usage.in || 0; o.tout += e.usage.out || 0; }
       by.set(k, o);
+    }
+    if (process.argv.includes('--json')) {
+      const rows = [...by.entries()].map(([k, o]) => ({
+        agent: k, calls: o.n, okRate: Math.round((o.ok / o.n) * 100),
+        avgSeconds: +(o.ms / o.n / 1000).toFixed(1), avgChars: Math.round(o.chars / o.n),
+        inTok: o.tin, outTok: o.tout,
+      }));
+      console.log(JSON.stringify({ ok: true, totalEntries: log.length, agents: rows }, null, 2));
+      process.exit(0);
     }
     if (!by.size) { console.log('(还没有派活记录)'); process.exit(0); }
     console.log('agent\t次数\t成功率\t均耗时\t均字符\tin tok\tout tok\t成本');

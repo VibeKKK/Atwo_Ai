@@ -1,0 +1,58 @@
+{
+  "name": "orchestra",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "本机 AI 协作台：把任务派给真实在跑的多个 AI 客户端（Trae / CodeBuddy / WorkBuddy），产出收回、契约校验、预算记账、提案审阅。零依赖、零服务、不加锁。",
+  "keywords": [
+    "ai-agents",
+    "orchestration",
+    "multi-agent",
+    "cdp",
+    "cli"
+  ],
+  "license": "MIT",
+  "author": "kkk",
+  "engines": {
+    "node": ">=20.11.0"
+  },
+  "bin": {
+    "orch": "./orch.mjs",
+    "orch-db": "./store.mjs",
+    "orch-peer": "./pair.mjs",
+    "orch-pr": "./pr.mjs"
+  },
+  "main": "./lib/store.mjs",
+  "exports": {
+    ".": "./lib/store.mjs",
+    "./store": "./lib/store.mjs",
+    "./reply": "./lib/reply.mjs",
+    "./contract": "./lib/contract.mjs"
+  },
+  "files": [
+    "orch.mjs",
+    "orchestra.mjs",
+    "store.mjs",
+    "pair.mjs",
+    "pr.mjs",
+    "collab.mjs",
+    "resume.mjs",
+    "agents/",
+    "lib/",
+    "collab/PLAYBOOK.md",
+    "collab/SHARED.md",
+    "collab/authority.json",
+    "fixtures/",
+    "test/",
+    "eval/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node test/selftest.mjs && node test/lockpool.mjs && node test/batch_offline.mjs",
+    "eval:check": "node eval/run.mjs --selftest",
+    "list": "node orchestra.mjs list",
+    "health": "node orchestra.mjs health",
+    "db": "node store.mjs dbs"
+  }
+}

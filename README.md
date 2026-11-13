@@ -7,19 +7,61 @@
 ## 三分钟上手
 
 ```bash
+# 安装（本地链接，不需要发布到 npm）
+npm link          # 之后全局可用 orch
+
 # 1. 看谁活着
-node orchestra.mjs list
-node orchestra.mjs health
+orch list                 # 三个通道与各自强项
+orch health               # 谁活着 / 谁占着锁 / 今天还剩多少额度
 
 # 2. 派一件活（快速验证）
-node orchestra.mjs ask trae "只回复两个字：收到"
+orch ask trae "只回复两个字：收到"
 
 # 3. 真用：N 个独立任务同时甩出去
-node orchestra.mjs swarm tasks.md
-node orchestra.mjs swarm tasks.md --out report.md
+orch swarm tasks.md
+orch swarm tasks.md --out report.md
 
 # 4. 看并行到底省了多少
-node orchestra.mjs top
+orch top
+```
+
+不想 `npm link` 也能直接用 `node orchestra.mjs <cmd>`，两者等价（`orch` 只是子命令路由）。
+
+## 机器可读输出
+
+所有查询类命令都支持 `--json`，输出 `{ok:true,…}`；错误输出 `{ok:false,code,message}`，并带非零退出码。这样别的 agent / 脚本不用正则解析中文表格。
+
+```bash
+orch list --json
+orch stats --json
+orch budget --json
+orch health --json
+orch db list project --json
+orch db dbs --json
+```
+
+## 共享数据库（两套库，互不占用）
+
+```bash
+# 项目库：会过期的状态（进度 / 待办 / 交付物）
+orch db put project orchestra '{"状态":"开发中","下一步":"接入 CI"}'
+
+# 记忆库：不过期的方法（决策 / 教训 / 事实）
+orch db put 原则 判据 "不要拿界面现象猜内部状态" --db memory --note "三次误判的总结"
+
+orch db list project           # 看某库某表
+orch db log --since 30m        # 看最近谁改了什么
+orch db dbs                    # 两套库一起看
+```
+
+写入是追加式日志 + 每 agent 独立文件（单条 < 4096 字节时 append 原子），**读写都不加锁**；`compact` 折叠成快照，读路径会先读快照再叠日志。
+
+## 并肩看板
+
+```bash
+orch peer                # 双方状态 + 未读信 + 两套库摘要
+orch peer me "正在改存储层"
+orch peer post "存储修复已提交" --topic 存储
 ```
 
 ## swarm —— 吞吐最高的一档
@@ -138,6 +180,18 @@ eval/                  24 任务评测集与结果
 
 ## 纪律
 
-- 派活前先 `node orchestra.mjs ctx "<任务>"` 看注入预算，零成本。
+- 派活前先 `orch ctx "<任务>"` 看注入预算，零成本。
 - 改 `orchestra.mjs` / `pr.mjs` / `collab/authority.json` / `package.json` 属 protected 级，走 PR 审阅门，rank1 放行。
 - 项目状态不靠记忆：开工 `node resume.mjs list`，收工 `resume.mjs next` + `note`。
+- 查询类命令一律优先用 `--json` 取值，不要解析中文文本。
+
+## 测试
+
+```bash
+npm test              # 纯函数 31 项 + 锁池 + 脱机 batch
+npm run eval:check    # 评测判据自检 9/9
+```
+
+## 许可证
+
+MIT，见 [LICENSE](LICENSE)。
