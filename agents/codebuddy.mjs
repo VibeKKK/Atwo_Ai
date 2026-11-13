@@ -97,7 +97,13 @@ const NEED_AUTH = /Authentication required|Please use .login|not logged in|未�
 export async function askCodeBuddy(prompt, opts = {}) {
   const { timeoutMs = 300000, cwd, permissionMode = 'acceptEdits', model } = opts;
   const t0 = Date.now();
-  const args = ['-p', prompt, '--output-format', 'json'];
+  // 成本实验（2026-11-13 实测 in tokens）：
+  //   --tools "default"            → 23,130
+  //   --tools "Write,Edit,Read"     →  7,633   ← 默认
+  //   --tools ""                    →  6,175（纯文本任务，不能改文件）
+  // 系统提示里工具 schema 占大头，限制工具就砍掉 2/3 固定开销。
+  const tools = process.env.CODEBUDDY_TOOLS !== undefined ? process.env.CODEBUDDY_TOOLS : 'Write,Edit,Read';
+  const args = ['-p', prompt, '--output-format', 'json', '--tools', tools, '--no-session-persistence', '--max-turns', '1'];
   if (permissionMode) args.push('--permission-mode', permissionMode);
   if (model) args.push('--model', model);
 

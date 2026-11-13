@@ -204,6 +204,23 @@ async function isBusy(c) {
   })()`);
 }
 
+// 点一下输入框中心拿焦点：新开对话后输入组件会被重建，没焦点时输入与回车都会落空。
+async function focusEditor(c) {
+  const rect = await c.js(`(() => {
+    const eds = [...document.querySelectorAll(SEL_EDIT)].filter(e => { const r = e.getBoundingClientRect(); return r.width > 100 && r.height > 10; });
+    const e = eds[0]; if (!e) return null;
+    const r = e.getBoundingClientRect();
+    return JSON.stringify({ x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) });
+  })()`.replace(/SEL_EDIT/g, JSON.stringify(SEL.edit)));
+  if (!rect) return false;
+  const p = JSON.parse(rect);
+  for (const type of ['mousePressed', 'mouseReleased']) {
+    await c.call('Input.dispatchMouseEvent', { type, x: p.x, y: p.y, button: 'left', clickCount: 1 });
+  }
+  await sleep(150);
+  return true;
+}
+
 async function pressEnter(c) {
   await c.call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
   await c.call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
@@ -278,6 +295,19 @@ export async function askTrae(prompt, opts = {}) {
   try {
     if (!await inputSelectorReady(c)) throw new Error('Trae Agent 面板没就绪');
 
+    // 默认每次派活先开新对话 —— 让「回合数」判据重新可靠：
+    // Trae 的会话列表虚拟化，DOM 只留最近 ~5-11 条，到上限后回合数不再增长，
+    // 连续两次问同一句、答案又一样时文本指纹也不变，就判不出来。开新对话把回合数归零。
+    // 要保留上下文连续对话，设 ORCH_TRAE_REUSE=1。
+    if (process.env.ORCH_TRAE_NEW_CHAT === '1') {
+      try {
+        const nc = await clickNewTask({ port: opts.port ?? PORT });
+        if (!nc.ok) console.error('[提示] 开新对话失败：' + nc.reason);
+        await sleep(500);
+        await focusEditor(c);   // 新对话会换掉输入组件，必须重新点一下拿焦点
+      } catch (err) { console.error('[提示] 开新对话异常：' + err.message); }
+    }
+
     let left = await clearInput(c);
     if (left < 0) throw new Error('输入框不存在（面板可能没打开）');
     if (left > 0) { await sleep(400); left = await clearInput(c); }
@@ -291,8 +321,12 @@ export async function askTrae(prompt, opts = {}) {
     }
 
     // 基线必须在「输入框已写满、还没发送」这一刻取 —— 之前取会把残留草稿算进去
+
     const beforeText = await pageText(c);
     const baseAns = await readAnswers(c);   // 发送前的回复容器数量（判断"是否新增一条"的基准）
+    // Trae 的会话列表只保留最近若干条；接近上限后「回合数」不再增长，
+    // 此时只有「文本指纹变化」可用 —— 同问题同答案会判不出来，需要开新对话。
+    if (baseAns.turns >= 8) console.error('[提示] 当前会话已有 ' + baseAns.turns + ' 条回合（接近虚拟化上限），建议在 Trae 里开一个新对话以免判据失灵');
     await sleep(250);
     await pressEnter(c);
 
@@ -320,10 +354,22 @@ export async function askTrae(prompt, opts = {}) {
       const ans = await readAnswers(c);
       const busy = await isBusy(c);
       const changed = !!ans.text && ans.text !== baseAns.text;
+      // 盲区修复：如果两次问的是同一句话、答案也一模一样，文本指纹就不会变。
+      // 这时用「回合数变多」或「确实忙过一轮 + 当前有文本」作为补充证据。
+      const grew = ans.turns > baseAns.turns;
+      // 注意：不拿 sawBusy 兜底 —— 那会在 Trae 没真回答时接受上一轮的旧文本（实测过）。
+      const active = changed || grew;
       if (DEBUG) console.error(`[poll ${((Date.now() - t0) / 1000).toFixed(1)}s] busy=${busy} turns=${ans.turns}(base ${baseAns.turns}) len=${ans.text.length} changed=${changed}`);
       if (busy) sawBusy = true;
+      // 快速失败：45 秒内既没新回合、文本也没变 —— 说明 Trae 没接这轮
+      // （典型两种：会话已满到虚拟化上限、或答案与上一轮完全相同导致指纹不变）
+      if (!active && Date.now() - t0 > 45000) {
+        const e2 = new Error('Trae 45 秒内没有产生新回合（会话可能已满或答案与上一轮完全相同）。建议：在 Trae 里开新对话，或换个问法；也可设 ORCH_TRAE_NEW_CHAT=1 让管道自动开新对话（该模式仍在调试）。');
+        e2.code = 'ESTALE';
+        throw e2;
+      }
 
-      if (changed) {
+      if (active) {
         if (ans.text !== lastText) {
           lastText = ans.text;
           stableSince = Date.now();
@@ -340,8 +386,10 @@ export async function askTrae(prompt, opts = {}) {
     // 3) 取结果：容器法优先（干净），失败才退回页面文本 diff
     const ans = await readAnswers(c);
     const changedNow = !!ans.text && ans.text !== baseAns.text;
+    const grewNow = ans.turns > baseAns.turns;
+    const activeNow = changedNow || grewNow;
     let added, source;
-    if (changedNow) {
+    if (activeNow) {
       added = cleanCodeChrome(extractReply(ans.text));
       source = 'container';
     } else {
@@ -441,6 +489,57 @@ async function readAnswers(c) {
 }
 
 /** 只读：拿当前页面的渲染文本（含滚动外内容） */
+// 体检用快照：只做廉价 DOM 计数，不写不点，用于 preflight 判断「界面结构还在不在」
+const SNAP_JS = `(() => {
+  const cnt = (list) => { for (const s of list) { try { const n = document.querySelectorAll(s).length; if (n > 0) return n; } catch {} } return 0; };
+  const body = document.body ? (document.body.innerText || '') : '';
+  return JSON.stringify({
+    turns: cnt(${JSON.stringify(SEL.turn)}),
+    renderer: cnt(${JSON.stringify(SEL.renderer)}),
+    edit: cnt(${JSON.stringify(SEL.edit)}),
+    len: body.length,
+  });
+})()`;
+
+export async function snapshotTrae(opts = {}) {
+  const c = await attach(opts.port ?? PORT, 'Agent');
+  try {
+    const raw = await c.js(SNAP_JS);
+    const s = JSON.parse(raw || '{}');
+    return { agentTurns: s.turns || 0, renderer: s.renderer || 0, editable: s.edit || 0, textLen: s.len || 0 };
+  } finally {
+    try { c.close(); } catch { }
+  }
+}
+
+// 开新对话：点 Trae 的「新建任务」按钮，把会话清空。
+// 为什么需要它：Trae 的会话列表是虚拟化的，DOM 只保留最近约 5-11 条，
+// 到上限后「回合数」不再增长，只能靠文本指纹判断；而连续两次问同一句话、
+// 答案又完全一样时指纹也不变 —— 那种情况判不出来。开新对话让回合数归零，
+// 判据就重新变得可靠（实测：点击后 agentTurns/userTurns 都归 0）。
+export async function clickNewTask(opts = {}) {
+  const c = await attach(opts.port ?? PORT, 'Agent');
+  try {
+    const r = await c.js(`(() => {
+      const bs = [...document.querySelectorAll('button[aria-label="新建任务"]')];
+      const b = bs.find(x => x.getBoundingClientRect().width > 0) || bs[0];
+      if (!b) return 'not-found';
+      b.click();
+      return 'clicked';
+    })()`);
+    if (r !== 'clicked') return { ok: false, reason: '找不到「新建任务」按钮' };
+    // 等它真的清空
+    for (let i = 0; i < 20; i++) {
+      await sleep(200);
+      const n = await c.js(`document.querySelectorAll('[class*="turn__agent-message"]').length`);
+      if (n === 0) return { ok: true };
+    }
+    return { ok: false, reason: '点了但会话没清空' };
+  } finally {
+    try { c.close(); } catch { }
+  }
+}
+
 export async function peekTrae(opts = {}) {
   const c = await attach(opts.port ?? PORT, 'Agent');
   try {

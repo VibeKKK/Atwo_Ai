@@ -23,6 +23,9 @@ import { readState, writeState, appendLog, readLog, setLastJob, buildContext } f
 import { brief as projectBrief } from './lib/project-memory.mjs';
 import { JSON_CONTRACT, PROSE_CONTRACT, parseContract, renderContract, fallbackCode, isCodeTask } from './lib/contract.mjs';
 import { withLock, withLockPool, withTimeout, listLocks } from './lib/lock.mjs';
+import { checkSyntax } from './lib/syntax.mjs';
+import { get as cacheGet, put as cachePut, stats as cacheStats, clear as cacheClear } from './lib/cache.mjs';
+import { preflightTrae } from './lib/preflight.mjs';
 import { check as budgetCheck, record as budgetRecord, report as budgetReport, usedToday } from './lib/budget.mjs';
 import { start as prStart, finish as prFinish } from './pr.mjs';
 import { loadTasks, buildBatchPrompt, splitResults } from './lib/batch.mjs';
@@ -235,6 +238,25 @@ async function dispatch(kindLabel, rawPrompt, extra = {}) {
   const base = ensureFenceHint(name, rawPrompt) + tail;
   const prompt = wantContract ? base + (codeTask ? JSON_CONTRACT : PROSE_CONTRACT) : base;
 
+  // 结果缓存（C②）：同 agent + 同 prompt 直接复用，不再付第二次钱。
+  // 只查「成功输出」；命中后仍走同样的渲染与语法校验路径（语法再验一次很便宜）。
+  const cacheKeyPrompt = prompt + ' ' + (wantContract ? 'C' : 'R');
+  const cachedHit = cacheGet(name, cacheKeyPrompt);
+  if (cachedHit && !extra.noCache) {
+    console.error('[缓存] 命中 ' + name + ' sha=' + cacheKeyPrompt.length + 'B → 0 token');
+    const r0 = { ok: true, addedText: cachedHit.addedText, usage: { in: 0, out: 0 }, cached: true };
+    const c0 = wantContract ? parseContract(cachedHit.addedText) : null;
+    const s0 = c0 && c0.ok ? checkSyntax(c0.data.code || c0.data.answer, c0.data.lang || c0.data.language) : { ok: true, lang: 'skip', error: '' };
+    appendLog({
+      agent: name, kind: kindLabel,
+      promptSummary: (extra.summary || rawPrompt).replace(/s+/g, ' ').slice(0, 120),
+      elapsedMs: 0, ok: true, outputChars: (r0.addedText || '').length,
+      error: '', usage: { in: 0, out: 0 }, cached: true,
+      contract: c0 ? (c0.ok ? 'ok' : c0.reason) : 'skipped',
+      syntax: s0 && !s0.ok ? (s0.lang + ':' + String(s0.error || '').split(String.fromCharCode(10))[0]).slice(0, 120) : 'ok',
+    });
+    return r0;
+  }
   // 闸门：先问预算，超了直接拒，别浪费一次调用
   const gate = budgetCheck(name, EST_INPUT[name] || 0);
   if (!gate.ok) {
@@ -243,8 +265,21 @@ async function dispatch(kindLabel, rawPrompt, extra = {}) {
     throw e;
   }
 
+  // 前置体检（A）：界面结构变了要立刻断得响亮，而不是让调用方等 4 分钟超时。
+  // 只对走 GUI 的 trae 做；结果缓存 60 秒，同一批任务只体检一次。
+  // 开关：ORCH_NO_PREFLIGHT=1 可跳过（排查用）。
+  if (name === 'trae' && process.env.ORCH_NO_PREFLIGHT !== '1') {
+    const pf = await preflightTrae();
+    if (!pf.ok) {
+      const e = new Error('[体检] ' + pf.reason);
+      e.code = 'EUI_CHANGED';
+      e.checks = pf.checks;
+      throw e;
+    }
+  }
+
   const t0 = Date.now();
-  let r = null, err = null, contract = null, retried = false;
+  let r = null, err = null, contract = null, retried = false, syntaxReport = null;
 
   // PR 模式（ORCH_PR=1）：每次派活开一个提案分支，干完形成 ready 提案。
   // 主干永远不受 agent 直接改动 —— 这就是「改动可回退」的全部意义。
@@ -279,14 +314,41 @@ async function dispatch(kindLabel, rawPrompt, extra = {}) {
 
   if (wantContract && r && r.ok) {
     contract = parseContract(r.addedText || '');
-    if (!contract.ok && process.env.ORCH_NO_RETRY !== '1') {
+    const canRetry = process.env.ORCH_NO_RETRY !== '1';
+
+    // 语法闸（B）：契约只保证「有 code 字段」，不保证「能编译」。
+    // 编译不花钱、返工才花钱 —— 所以在交付前替调用方跑一次编译器。
+    const syntaxOf = (c) => (c && c.ok && c.data && (c.data.code || c.data.answer))
+      ? checkSyntax(c.data.code || c.data.answer, c.data.lang || c.data.language)
+      : { ok: true, lang: 'skip', error: '' };
+
+    let syn = syntaxOf(contract);
+    if (contract.ok && !syn.ok && syn.lang !== 'skip') {
+      const first = String(syn.error || '').split(String.fromCharCode(10))[0];
+      console.error('[语法闸] ' + syn.lang + ' 编译失败：' + first);
+      if (canRetry) {
+        retried = true;
+        const fixPrompt = prompt + String.fromCharCode(10) + String.fromCharCode(10)
+          + '[语法闸] 你上一次给的代码编译失败，编译器原文：' + String.fromCharCode(10) + syn.error
+          + String.fromCharCode(10) + '请修正后重新输出完整的 JSON 对象（不要解释）。';
+        try {
+          const r3 = await runOnce(fixPrompt);
+          if (r3 && r3.ok) { r = r3; contract = parseContract(r3.addedText || ''); syn = syntaxOf(contract); }
+        } catch (e3) { /* 修不动就带原始错误交付，由调用方决定 */ }
+      }
+    }
+
+    // JSON 都解析不了 → 更严格地重来一次
+    if (!contract.ok && canRetry) {
       retried = true;
-      const stricter = prompt + '\n\n[重试] 上一次输出无法被 JSON.parse 解析。这次只输出 JSON 对象本身，不要任何解释文字。';
+      const stricter = prompt + String.fromCharCode(10) + String.fromCharCode(10) + '[重试] 上一次输出无法被 JSON.parse 解析。这次只输出 JSON 对象本身，不要任何解释文字。';
       try {
         const r2 = await runOnce(stricter);
-        if (r2 && r2.ok) { r = r2; contract = parseContract(r2.addedText || ''); }
+        if (r2 && r2.ok) { r = r2; contract = parseContract(r2.addedText || ''); syn = syntaxOf(contract); }
       } catch (e2) { /* 重试失败就用第一次的原文兜底 */ }
     }
+
+    syntaxReport = syn;
   }
 
   const usage = (r && r.usage) || {};
@@ -295,6 +357,11 @@ async function dispatch(kindLabel, rawPrompt, extra = {}) {
     const tokIn = usage.input_tokens ?? usage.inputTokens ?? usage.in ?? usage.prompt_tokens ?? 0;
     const tokOut = usage.output_tokens ?? usage.outputTokens ?? usage.out ?? usage.completion_tokens ?? 0;
     budgetRecord(name, { input: tokIn, output: tokOut, ok: !!(r && r.ok) });
+  }
+
+  // 成功才写缓存：失败/降级不缓存，否则错误会被冻结到 TTL 过期。
+  if (r && r.ok && r.addedText && !r.cached) {
+    try { cachePut(name, cacheKeyPrompt, r.addedText); } catch { /* 缓存失败不影响交付 */ }
   }
 
   const entry = {
@@ -309,6 +376,8 @@ async function dispatch(kindLabel, rawPrompt, extra = {}) {
   if (r && r.cost) entry.cost = r.cost;
   if (r && r.usage) entry.usage = r.usage;
   if (wantContract) entry.contract = contract ? (contract.ok ? 'ok' : contract.reason) : 'skipped';
+  if (syntaxReport) entry.syntax = syntaxReport.ok ? 'ok' : (syntaxReport.lang + ':' + String(syntaxReport.error || '').split(String.fromCharCode(10))[0]).slice(0, 120);
+  if (r && r.cached) entry.cached = true;
   if (retried) entry.retried = true;
   if (pr) entry.pr = pr.id;
 
@@ -330,15 +399,19 @@ async function dispatch(kindLabel, rawPrompt, extra = {}) {
   try { setLastJob(entry); } catch { }
 
   if (err) {
-    if (r && r.addedText) console.log(renderOut(r, contract));
+    if (r && r.addedText) console.log(renderOut(r, contract, r.syntax));
     throw err;
   }
-  return { ...r, contract };
+  return { ...r, contract, syntax: syntaxReport };
 }
 
 /** 统一渲染：契约成功就出干净内容，失败就出原文（并标注）。 */
-function renderOut(r, contract) {
-  if (contract && contract.ok) return renderContract(contract.data);
+function renderOut(r, contract, syntax) {
+  const synWarn = (syntax && !syntax.ok && syntax.lang !== 'skip')
+    ? String.fromCharCode(10, 10) + '[语法未通过] ' + syntax.lang + ' 编译失败，以下代码不能直接用：'
+      + String.fromCharCode(10) + String(syntax.error || '').split(String.fromCharCode(10)).slice(0, 3).join(String.fromCharCode(10))
+    : '';
+  if (contract && contract.ok) return renderContract(contract.data) + synWarn;
   const raw = (r && r.addedText) || '';
   if (contract && !contract.ok) {
     const fb = fallbackCode(raw);
@@ -352,7 +425,7 @@ try {
     const prompt = rest.join(' ').trim();
     if (!prompt) { console.error('prompt 不能为空'); process.exit(2); }
     const r = await dispatch('ask', prompt);
-    console.log(renderOut(r, r.contract));
+    console.log(renderOut(r, r.contract, r.syntax));
     process.exit(0);
   }
 
@@ -370,7 +443,7 @@ try {
     const outFile = path.join(outDir, `${who}-review-${base}-${nowStr()}.md`);
     fs.writeFileSync(outFile,
       `# ${who} 评审：${base}\n\n- 时间：${new Date().toLocaleString('zh-CN')}\n- 耗时：${((r.elapsedMs || 0) / 1000).toFixed(1)}s\n\n---\n\n${r.addedText || '(空)'}\n`, 'utf8');
-    console.log(renderOut(r, r.contract));
+    console.log(renderOut(r, r.contract, r.syntax));
     console.log('\n[saved] ' + outFile);
     process.exit(0);
   }
@@ -444,7 +517,7 @@ try {
     const pick = pickAgent(prompt);
     console.log(`[auto] → ${pick.name}（${pick.why}）`);
     const r = await dispatch('auto', prompt, { agent: pick.name, summary: '[auto] ' + prompt.slice(0, 60) });
-    console.log(renderOut(r, r.contract));
+    console.log(renderOut(r, r.contract, r.syntax));
     process.exit(0);
   }
 

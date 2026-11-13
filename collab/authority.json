@@ -1,6 +1,6 @@
 {
   "schema": "dsh-authority/v1",
-  "version": 4,
+  "version": 5,
   "updated": "2026-11-13T16:55+08:00",
   "author": "用户 kkk（口头设定，可由他随时更改）",
   "note": "rank1 与 rank2 共同掌管 rank3 及以下；rank3 随时可用，派活按双方工作量分摊。任何等级调整必须由用户发起并递增 version。",
@@ -34,14 +34,14 @@
       "id": "orchestra-agents",
       "members": [
         "trae",
-        "codebuddy",
-        "future-adapters"
+        "codebuddy"
       ],
       "powers": [
         "只做被派给它的具体任务",
         "不上报用户，不自行扩大范围",
         "结果交回派活方"
-      ]
+      ],
+      "note": "执行层只算真正能派活的通道。workbuddy 目前只能提供模型额度（channel-pack 账号 buddy-42be8504），5.11.2 更新后会丢弃 --remote-debugging-port、内部只有 /api/_evlog 等私有路由，没有对话接口 → 不计入执行层。"
     }
   ],
   "governance": {
