@@ -13,7 +13,7 @@ DSH 与其他 AI 之间的派活/互审/共享记忆通道
 - [ ] DSH 插件已装（junction + cordis.patch.yml），重启 DSH 后出现 orchestra_ask/pick/status 三个工具，重启后要实测一次
 
 ## 下一步
-- 等 dsh work replace 回信（协同第一封 00:32 已投，用户令：等他做完）
+- 先给 trae 一次限时修复（从任务列表行抓答案），不成则标记降级；然后跑 codebuddy 全量 24 任务基线（约 18 万 token，需用户点头）
 
 ## 已确认的事实
 - 建立于 2026-11-13 00:20
@@ -28,3 +28,4 @@ DSH 与其他 AI 之间的派活/互审/共享记忆通道
 - 2026-11-13 15:20  trae 误判额度已修（营销横幅 + busy 判据双错），五条链路复测全过
 - 2026-11-13 18:20  A/B/C①② 落地：preflight 0.4s 报错、语法闸、codebuddy -67% token、缓存 7.2s→0.08s
 - 2026-11-13 20:09  WorkBuddy 通道打通：环境变量 WORKBUDDY_REMOTE_DEBUGGING_PORT 开 CDP（命令行 flag 无效）；Host 头、Slate 编辑器、aria-label=发送 三个坑已解；已接入 orchestra 为第三通道
+- 2026-11-13 21:09  评测集已建成：24 任务/判据自检 9-9/codebuddy 3-3=100%。trae 今日因 Trae 自身更新（对话区类名换成 solo-lite-chat-panel + message-list-cache-item，发送后停在任务列表且点任务项不跳转）0-3；已修好输入（CDP Input.insertText 替代合成 paste）与回车（keyDown+keyUp + 重聚焦）。
