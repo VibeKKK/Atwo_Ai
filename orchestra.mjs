@@ -130,6 +130,20 @@ if (cmd === 'memory') {
   console.error('未知 memory 子命令: ' + sub); usage(); process.exit(2);
 }
 
+  // ---- pr：把 agent 改动当提案管（代理到 pr.mjs，避免两套实现漂移）----
+  if (cmd === 'pr') {
+    const { spawnSync } = await import('node:child_process');
+    // 注意：这里的参数不能复用顶部的 [cmd, who, ...rest]，因为 pr 的第二个词
+    // 是动作（list/approve/…），会被当成 agent 名解析掉。
+    const prArgs = process.argv.slice(3);
+    const r = spawnSync(process.execPath, [path.join(ROOT, 'pr.mjs'), ...prArgs], {
+      cwd: ROOT,
+      stdio: 'inherit',
+      windowsHide: true,
+    });
+    process.exit(r.status == null ? 1 : r.status);
+  }
+
   // ---- budget：今天的额度账（按 agent / 按天）----
   if (cmd === 'budget') {
     const rep = budgetReport();
