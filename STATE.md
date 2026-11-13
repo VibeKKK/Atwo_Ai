@@ -27,3 +27,4 @@ DSH 与其他 AI 之间的派活/互审/共享记忆通道
 - 2026-11-13 15:16  dsh-orchestra 插件 v0.1.0 @ C:/Users/kkk/.dsh/plugins-src/dsh-orchestra：假 ctx 验证 8/8 通过（含真实派活 21s），YAML patch 解析 24 条命中；待重启生效
 - 2026-11-13 15:20  trae 误判额度已修（营销横幅 + busy 判据双错），五条链路复测全过
 - 2026-11-13 18:20  A/B/C①② 落地：preflight 0.4s 报错、语法闸、codebuddy -67% token、缓存 7.2s→0.08s
+- 2026-11-13 20:09  WorkBuddy 通道打通：环境变量 WORKBUDDY_REMOTE_DEBUGGING_PORT 开 CDP（命令行 flag 无效）；Host 头、Slate 编辑器、aria-label=发送 三个坑已解；已接入 orchestra 为第三通道

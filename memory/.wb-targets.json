@@ -1,0 +1,11 @@
+[
+  {
+    "description": "",
+    "devtoolsFrontendUrl": "https://chrome-devtools-frontend.appspot.com/serve_rev/@37e404e577817a219e0cfa8a14135529aaeed185/inspector.html?ws=localhost:9224/devtools/page/B4920B435069DCCBA6923828AB3CA99A",
+    "id": "B4920B435069DCCBA6923828AB3CA99A",
+    "title": "WorkBuddy",
+    "type": "page",
+    "url": "file:///D:/code%20app/ai%20code/WorkBuddy/resources/app.asar/renderer/index.html?locale=zh-CN&wbSeedToken=63f84f3eadc816a72af8628255db26e2&accountSnapshot=%257B%2522version%2522%253A1%252C%2522uid%2522%253A%25220f4410c4-5596-444b-9403-baa855ed0fa2%2522%252C%2522nickname%2522%253A%2522187****1388%2522%252C%2522type%2522%253A%2522personal%2522%252C%2522editionType%2522%253A%2522free%2522%252C%2522isPro%2522%253Afalse%252C%2522isAdmin%2522%253Afalse%252C%2522oneidAccountId%2522%253A%2522%2522%252C%2522enableArdotDesign%2522%253Atrue%252C%2522showDefaultPermission%2522%253Atrue%252C%2522savedAt%2522%253A1794570843917%257D",
+    "webSocketDebuggerUrl": "ws://localhost:9224/devtools/page/B4920B435069DCCBA6923828AB3CA99A"
+  }
+]

@@ -19,6 +19,7 @@ import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { askTrae, peekTrae, meta as traeMeta } from './agents/trae.mjs';
 import { askCodeBuddy, peekCodeBuddy, meta as cbMeta } from './agents/codebuddy.mjs';
+import { ask as askWorkBuddy, doctor as wbDoctor, META as wbMeta } from './agents/workbuddy.mjs';
 import { readState, writeState, appendLog, readLog, setLastJob, buildContext } from './lib/memory.mjs';
 import { brief as projectBrief } from './lib/project-memory.mjs';
 import { JSON_CONTRACT, PROSE_CONTRACT, parseContract, renderContract, fallbackCode, isCodeTask } from './lib/contract.mjs';
@@ -38,6 +39,7 @@ const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const REGISTRY = {
   trae: { ask: askTrae, peek: peekTrae, meta: traeMeta },
   codebuddy: { ask: askCodeBuddy, peek: peekCodeBuddy, meta: cbMeta },
+  workbuddy: { ask: askWorkBuddy, peek: null, meta: wbMeta, doctor: wbDoctor },
 };
 
 // ---- 自动选 agent（实测依据见 SHARED.md §10）----
@@ -238,7 +240,8 @@ async function dispatch(kindLabel, rawPrompt, extra = {}) {
   // 契约：代码活用 code 契约、其余用 answer 契约。散文也要 —— 否则 Trae 的页面 diff
   // 会把「@ 添加上下文」「完全访问」这类 UI 文案算进回答（实测污染过一次）。
   const codeTask = isCodeTask(rawPrompt);
-  const wantContract = extra.contract ?? (process.env.ORCH_NO_CONTRACT !== '1');
+  // workbuddy 是散文型（不主动给 JSON），默认不套契约；ORCH_WB_CONTRACT=1 可强制
+  const wantContract = extra.contract ?? (process.env.ORCH_NO_CONTRACT !== '1' && (name !== 'workbuddy' || process.env.ORCH_WB_CONTRACT === '1'));
   let base = ensureFenceHint(name, rawPrompt) + tail;
   // 临时能力（ephemeral）：只把「有什么」压成 ≤1200 字符注入，全文按需读 ——
   // 这样能力本身不占常驻上下文，会话结束自动失效。

@@ -1,0 +1,20 @@
+import fs from 'node:fs'; import path from 'node:path'; import { createRequire } from 'node:module';
+const require = createRequire('C:/Users/kkk/.dsh/profiles/desktop/node_modules/');
+const WebSocket = require('ws');
+const targets = JSON.parse(fs.readFileSync('D:/ai project/ai team work/memory/.wb-targets.json','utf8'));
+const page = targets.find(t=>t.type==='page');
+const ws = new WebSocket(page.webSocketDebuggerUrl.replace('localhost','127.0.0.1'), { origin:'http://localhost' });
+await new Promise((r,j)=>{ws.on('open',r);ws.on('error',j)});
+let seq=0;
+const send=(m,p={})=>new Promise((res,rej)=>{const id=++seq;const on=(raw)=>{let o;try{o=JSON.parse(raw.toString())}catch{return}if(o.id!==id)return;ws.off('message',on);o.error?rej(new Error(JSON.stringify(o.error))):res(o.result)};ws.on('message',on);ws.send(JSON.stringify({id,method:m,params:p}))});
+const ev=async e=>(await send('Runtime.evaluate',{expression:e,returnByValue:true})).result.value;
+console.log('--- 含"发送/回车/submit/send"的元素 ---');
+console.log(await ev(`JSON.stringify([...document.querySelectorAll('button,[role=button],div,span')].filter(e=>{
+  const s=((e.innerText||'')+(e.getAttribute&&e.getAttribute('aria-label')||'')+(e.title||'')).trim();
+  return s && s.length<12 && /发送|回车|send|submit/i.test(s) && !!(e.offsetWidth||e.offsetHeight);
+}).slice(0,10).map(e=>({tag:e.tagName, txt:(e.innerText||'').slice(0,10), aria:e.getAttribute('aria-label')||'', cls:String(e.className).slice(0,60)})),null,1)`));
+console.log('\n--- 输入框容器 HTML（1800 字符）---');
+console.log(await ev(`(()=>{const el=document.querySelector('div[contenteditable="true"]');let n=el;for(let i=0;i<2;i++)n=n.parentElement||n;return n.outerHTML.slice(0,1800)})()`));
+console.log('\n--- 输入框内容 ---');
+console.log(await ev(`(()=>{const e=document.querySelector('div[contenteditable="true"]');return JSON.stringify({txt:(e.innerText||'').slice(0,40),len:(e.innerText||'').length})})()`));
+ws.close(); process.exit(0);
