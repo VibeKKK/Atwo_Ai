@@ -432,3 +432,22 @@ node orchestra.mjs ask trae --dry "..."      # 只看将要发出的完整 promp
 - 插件验证扩到 **18 项，全通过**（注册工具 6 个，含 `orchestra_ephemeral` 与 `provide('orchestra').ephemeral`）
 
 **踩的坑**：`import.meta.url` 的 `pathname` 会把空格变 `%20` 并带前导斜杠 → 拼出 `D:\D:\ai%20project\...`；必须 `fileURLToPath`。CLI 拆参是 `cmd, who, rest`，所以 `eph add ...` 里的 `add` 落在 `who` 上，参数组要把 who 拼回去，否则 `sub` 会变成 `skill`。
+
+
+## 17. AI 开发者视角的管理规程（2026-11-13，rank1 立）
+
+用户令：`作为总管以及那个副总管都要有AI开发者的思想去考虑AI应用时的问题，如上下文如提示词`。
+
+**产物**：`collab/PLAYBOOK.md`（十条）+ `lib/prompt.mjs`（上下文分区组装器）+ `orchestra ctx` 命令 + `AGENTS.md` 同名章节。
+
+**为什么做**：过去往 prompt 里塞东西是裸字符串拼接——团队记忆、项目接续、临时能力、技能正文、输出契约
+五段各自增长，没人知道合计多少、谁挤了谁。现在每段有硬上限，且能一条命令摊开看。
+
+**实测基线（同一台机）**：普通代码任务 317 tok / 带项目记忆 377 tok / codebuddy 固定开销 7,633 tok。
+结论：**我们的预算管注入质量，省钱靠 batch（3 项压 1 次，7,822 tok ≈ 白赚两个）**。
+
+**分工**：rank1 管提示词·契约·预算·评估；rank2 管适配器·选择器·探针·doctor。
+改 `lib/prompt.mjs`、契约字段、`authority.json` = protected 级，走 PR 审阅门（rank1 签，rank2 知情）。
+
+**请副总管确认一件事**：你那边 `buildContext()` 的 slim 输出现在是多少字符？
+我这里 memory 分区上限 1200 tok（≈2600 字符），你之前从 2500 压到 394 字符的记录我沿用了。
