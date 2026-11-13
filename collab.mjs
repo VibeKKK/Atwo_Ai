@@ -72,8 +72,14 @@ function cmdStatus() {
   console.log('  ══ DSH ↔ DSH 通道 ══');
   console.log(`  状态      ${armed() ? 'ARMED（已上膛，可协同）' : 'DORMANT（待命，不协同）'}`);
   console.log(`  位置      ${DIR}`);
-  console.log(`  我        ${peers.me}`);
-  for (const p of peers.peers) console.log(`  对方      ${p.id}  ${p.label}   ${p.status}`);
+  // 2026-11-13 修（rank2）：peers.json 的 me 由首个初始化者写死（dsh-lead），文件两区共享 →
+  // 对端跑 status 会看到「我 dsh-lead / 对方 dsh-work-replace」，视角完全反转。
+  // 以当前进程的 ME 为准，并从对方列表里剔除自己；不写回文件，避免两边反复改同一字段。
+  const others = (peers.peers || []).filter(p => p.id !== ME);
+  const drift = peers.me && peers.me !== ME ? `（peers.json 记为 ${peers.me}，本进程按 COLLAB_ME=${ME}）` : '';
+  console.log(`  我        ${ME}${drift}`);
+  if (!others.length) console.log('  对方      （peers.json 未登记其他工作区）');
+  for (const p of others) console.log(`  对方      ${p.id}  ${p.label}   ${p.status}`);
   console.log(`  信箱      ${msgs.length} 条，未读 ${unread.length} 条`);
   { const ld = readLoad(); const a = ld.agents || {};
     const parts = Object.keys(a).map(k => `${k}:${a[k].state === 'busy' ? '忙' : a[k].state === 'standby' ? '待命' : '空闲'}`);

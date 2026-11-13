@@ -168,3 +168,68 @@ ask / auto / pick / batch / eph / ctx / pr / budget / health / doctor / probe / 
 ---
 
 _2026-11-13 立。rank1 维护，rank2 可提修订（走 PR）。_
+
+## 11. 会话生命周期：一条会话干一个项目，完工才删（2026-11-14 用户令）
+
+**用户原话：`以后每次使用创建对话之后项目完工再删除`**
+
+| 阶段 | 动作 |
+|---|---|
+| 开工 | 复用当前会话，**不新建**（Trae 侧 `ORCH_TRAE_NEW_CHAT` 默认关） |
+| 中途 | 不删。唯一例外：单会话约 12 回合后 DOM 虚拟化读不到新答案（45 秒 ESTALE）→ 开新会话续写，旧的留着 |
+| 完工 | `node trae_del.mjs 100 --dry` 看清单 → `node trae_del.mjs 100 --keep <项目关键词>` 批量清 |
+
+硬道理：
+- 每题新建 = 一晚上几十条垃圾（2026-11-13 实测 31 条），且**删某项目最后一个会话会连带删掉侧栏项目条目**（`test1` 就这样消失过，磁盘文件没丢）。
+- 中途删 = 上下文没了，无法复盘，也无法向用户解释当时为什么那么做。
+- 删除入口是网页菜单 `[data-testid="session-delete-action"]`（右键会话行），1.5 秒/条，不占系统鼠标；系统级鼠标点击是绕远路。
+
+## 12. 共享数据库：项目库 + 记忆库，两套同时读写互不占用（2026-11-14 用户令）
+
+**用户原话：`类似模仿数据库，所有agent都可以同时并发增删改查，相互看到对方干了什么，而且不会产生占用问题` → `分为项目数据库和记忆数据库，实现项目和记忆的同时读写互不占用`**
+
+### 为什么不用 SQLite / Redis
+都有写锁：SQLite 单写者会抛 `SQLITE_BUSY`，Redis 单线程排队。要「不会产生占用」就不能有锁。
+
+### 结构：事件日志 + 每 agent 独立文件，两套库目录完全分开
+```
+memory/db/project/journal/<agent>.jsonl   项目库：进度 / 状态 / 待办 / 交付物
+memory/db/memory/journal/<agent>.jsonl    记忆库：决策 / 教训 / 事实 / 偏好
+memory/db/<库>/snapshot.json              compact 折叠出的快照
+```
+两套库的写路径、读缓存、快照文件各自独立 → 写记忆库不触碰项目库文件，反之亦然。
+单行 < 4096 字节时 append 是原子的，所以连文件锁都不需要。
+
+### 命令（`--db project|memory`，默认 project）
+```bash
+node store.mjs put  <表> <键> <值> --note 说明 [--db memory] [--by agent]
+node store.mjs get  <表> <键>    [--db memory]
+node store.mjs list <表>         [--db memory]
+node store.mjs del  <表> <键> --note 原因   [--db memory]     # 逻辑删除，历史保留
+node store.mjs log  --since 30m --by trae [--db memory]        # 看别人干了什么
+node store.mjs dbs                                             # 两套库一起看
+node store.mjs stat | tables | compact --keep 200  [--db memory]
+```
+`--by` 省略时取 `AGENT_ID` / `COLLAB_ME` / `ORCH_ME`，最后兜底 `dsh-lead`。
+
+### 分工口径（写哪套库）
+| 库 | 放什么 | 例子 |
+|---|---|---|
+| project | 会过期的状态 | 某项目进度、卡在哪、下一步、谁负责 |
+| memory | 不会过期的方法与事实 | 「发送键是哪个 class」「默认用 codebuddy」「什么判据会误判」 |
+
+判据：**三个月后还成立 → 记忆库；下周一就变 → 项目库。**
+
+### 实测（2026-11-14 00:26）
+```
+单库并发纯写     4 进程 × 250 条 = 1000 条        165 ms   6061 条/秒   0 错误
+双库并发        4 进程 × 120 轮（每轮两库各写）= 960 次  8545 ms  112 次/秒  0 错误
+隔离验证        写记忆库后项目库 journal mtime 未变（通过）；反向亦未变（通过）
+读              list 1000 行 1 ms；1000 次 get 307 ms → 0.307 ms/次
+```
+
+### 规矩
+- 一个键归一个 agent 主维护，别人要改先 `get` 看现值，改完在 `--note` 写原因。
+- 不要手拼 journal 文件，只用 `store.mjs` / `lib/store.mjs`。
+- 单条值 ≤ 4KB（超了拆行，比如一项目一行）。
+- 两套库不要混用同一张表名（`task` 在项目库、`lesson` 在记忆库，各自独立）。

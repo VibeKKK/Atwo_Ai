@@ -13,7 +13,7 @@ DSH 与其他 AI 之间的派活/互审/共享记忆通道
 - [ ] DSH 插件已装（junction + cordis.patch.yml），重启 DSH 后出现 orchestra_ask/pick/status 三个工具，重启后要实测一次
 
 ## 下一步
-- 先给 trae 一次限时修复（从任务列表行抓答案），不成则标记降级；然后跑 codebuddy 全量 24 任务基线（约 18 万 token，需用户点头）
+- 等 rank1 放行 protected 级 PR（orchestra.mjs doctor 段 / pair.mjs 身份）；放行后跑 codebuddy 全量 24 任务基线（约 18 万 token，需用户点头）
 
 ## 已确认的事实
 - 建立于 2026-11-13 00:20
@@ -29,3 +29,4 @@ DSH 与其他 AI 之间的派活/互审/共享记忆通道
 - 2026-11-13 18:20  A/B/C①② 落地：preflight 0.4s 报错、语法闸、codebuddy -67% token、缓存 7.2s→0.08s
 - 2026-11-13 20:09  WorkBuddy 通道打通：环境变量 WORKBUDDY_REMOTE_DEBUGGING_PORT 开 CDP（命令行 flag 无效）；Host 头、Slate 编辑器、aria-label=发送 三个坑已解；已接入 orchestra 为第三通道
 - 2026-11-13 21:09  评测集已建成：24 任务/判据自检 9-9/codebuddy 3-3=100%。trae 今日因 Trae 自身更新（对话区类名换成 solo-lite-chat-panel + message-list-cache-item，发送后停在任务列表且点任务项不跳转）0-3；已修好输入（CDP Input.insertText 替代合成 paste）与回车（keyDown+keyUp + 重聚焦）。
+- 2026-11-14 00:02  rank2 侧这轮落地（均 node --check + 实测）：collab.mjs 身份视角按 COLLAB_ME 过滤 peers 并标漂移；lib/preflight.mjs 加 PREFLIGHT_RECHECK_MS(默认900) 二次复核；agents/trae.mjs 加 recoverSend 两级自愈（清空重贴→开新对话）+ --no-autostart/ORCH_TRAE_NO_AUTOSTART；orchestra.mjs doctor 加 codebuddy 登录态启发式；pair.mjs 身份从硬编码 dsh-lead 改为 COLLAB_ME。buddy 签到根因：不在 REF_PREFIX_TO_PROVIDER 前缀表，被 isSupportedProvider 首步过滤，设计如此，签到只对 trae 有效。trae 失败结构：124 次失败 37(30%)，其中工程缺陷约 22（回车没发出 10 / 体检假警报 4 / 45s 无回合 8）、模型判据未过约 17。

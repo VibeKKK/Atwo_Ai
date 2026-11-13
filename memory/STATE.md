@@ -7,8 +7,19 @@
 - 用途：DSH 拆任务写提示词 → 派给 Trae / CodeBuddy 执行 → DSH 验收 → 记账
 
 ## 当前阶段
-- 时间：2026-11-13 00:55
-- 状态：v2 可用。两条通道（trae CDP / codebuddy CLI）+ duo 并行派活 + stats 记账 + 共享记忆；与 dsh-lead（rank1）共管 rank3
+- 时间：2026-11-14 00:35
+- 状态：**v3 吞吐版**。三通道（trae CDP / codebuddy CLI / workbuddy CDP）+ duo + batch + **swarm** + top 看板 + stats 记账 + 共享记忆；与 dsh-lead（rank1）共管 rank3
+  - **v3 核心：`swarm` 群体派活引擎**（`lib/swarm.mjs`，新增）—— N 个独立任务跨 agent 并行，auto 分配（要代码→codebuddy，散文→trae），失败自动换路重试，批次落 `.swarm/<runId>/` 可 `--resume` 续跑，`--out` 出 markdown 报告
+  - **实测提速 2.15–2.47×**（16 个任务 100% 成功）：6 混合任务墙钟 103.3s vs 串行 255.4s；10 散文任务 136.5s vs 293.1s。提速来源是两条流水线同时跑（总耗时≈最慢那一条），不是模型变快
+  - **trae 8 回合天花板的正确解法是动态改派**：`ORCH_TRAE_SOFT_LIMIT`（默认 8）超出部分自动转 codebuddy 并打 `⇄` 日志。开新会话这条路已证伪（点新建后会话区读不到文本），不要再去试
+  - codebuddy 默认并发 2 → **6**（`ORCH_SLOTS_codebuddy` 可覆盖）
+  - 新增 `top [n]` 吞吐看板：每批墙钟 vs 串行、提速比、分配构成；累计节省时间
+  - 顺手写了 `README.md`（143 行，原来只有 2 个空行）：三分钟上手 / 分配规则 / 三个 agent 的能力边界与实测耗时 / 成本模型 / 已知限制 / 文件结构
+  - `.swarm/` 进 .gitignore
+  - 本轮（rank2）修掉 trae 发送侧工程缺陷：`recoverSend` 两级自愈（清空重贴 → 开新对话）+ `--no-autostart`；preflight 假警报改为 `PREFLIGHT_RECHECK_MS` 二次复核（默认 900，可用 `ORCH_PREFLIGHT_RECHECK_MS` 覆盖）
+  - `collab.mjs` / `pair.mjs` 身份改为读 `COLLAB_ME`（原来 pair.mjs 硬编码 dsh-lead，rank2 侧发信会签错名、me 会覆盖对方负载条目）
+  - doctor 新增 codebuddy 登录态检查（启发式：CLI 无 auth status、凭据在 `~/.codebuddy/local_storage/entry_*.info` 且加密，只能看活跃时间）
+  - buddy 签到定为「设计如此」：不在 `REF_PREFIX_TO_PROVIDER` 前缀表，被 `isSupportedProvider` 首步过滤；签到只对 trae 有效，不必再查
 
 ## 已确认的事实
 - Trae CN 可用 CDP 全自动驱动：启动参数 --remote-debugging-port=9223，Agent 面板 title 为 Agent
@@ -36,9 +47,9 @@
 4. 若 CodeBuddy 登录态过期：起 node bin/codebuddy --serve --port 63910 --auth none 后浏览器点「国内站点登录」
 
 ## 最近一次派活
-- 时间：2026-11-13 21:32
+- 时间：2026-11-14 00:37
 - 指派给：trae
-- 任务：写一个 Python 装饰器 retry(times=3, delay=0)，捕获异常重试，全部失败则抛出最后一个异常。不要用第三方库。
-- 耗时：18.8s
-- 结果：失败 — 回车没发出去，输入框还留着文字
-- 产出长度：0 字符
+- 任务：写一个 Python 函数 clamp(x, lo, hi)，第 1 行必须是 / * * 开头的三行 JSDoc 块注释（形如 / * * \n * 说明 \n */），整个代码块必须放在三个反引号的代码围栏里。只输出围栏内容，不要任何解
+- 耗时：49.4s
+- 结果：成功
+- 产出长度：8300 字符

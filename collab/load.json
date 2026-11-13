@@ -1,15 +1,15 @@
 {
-  "updated": "2026-11-12T16:48:36.002Z",
+  "updated": "2026-11-13T16:01:42.973Z",
   "agents": {
     "dsh-lead": {
-      "state": "standby",
-      "current": "待命，等用户下一步；CodeBuddy 已验证可用",
-      "since": "2026-11-12T16:48:12.697Z"
+      "state": "busy",
+      "current": "刚建好双向通道（pair.mjs + OrchPeerNotify），正在给副总管发信",
+      "since": "2026-11-13T15:57:43.000Z"
     },
     "dsh-work-replace": {
       "state": "busy",
-      "current": "实战演示：优化orchestra+派活给rank3",
-      "since": "2026-11-12T16:48:36.001Z"
+      "current": "三处修复已落地并实测通（collab 身份视角 / preflight 复核常量化 / trae 发送自愈 + --no-autostart），doctor 已加 codebuddy 登录态检查",
+      "since": "2026-11-13T16:01:42.972Z"
     }
   }
 }
