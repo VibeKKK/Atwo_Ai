@@ -30,6 +30,7 @@ import { preflightTrae } from './lib/preflight.mjs';
 import { check as budgetCheck, record as budgetRecord, report as budgetReport, usedToday } from './lib/budget.mjs';
 import { start as prStart, finish as prFinish } from './pr.mjs';
 import { loadTasks, buildBatchPrompt, splitResults } from './lib/batch.mjs';
+import { assemble, renderReport as renderBudget } from './lib/prompt.mjs';
 import { add as ephAdd, list as ephList, remove as ephRemove, clear as ephClear, gc as ephGc, briefBlock as ephBrief, readSkill as ephReadSkill, stats as ephStats, KINDS as EPH_KINDS } from './lib/ephemeral.mjs';
 
 const TASK_TIMEOUT_MS = Number(process.env.ORCH_TIMEOUT_MS || 240000);
@@ -195,7 +196,7 @@ if (cmd === 'memory') {
     process.exit(0);
   }
 
-const NO_AGENT_CMDS = ['eph','duo','stats','auto','pick','doctor','probe','budget','health','list'];
+const NO_AGENT_CMDS = ['eph','ctx','duo','stats','auto','pick','doctor','probe','budget','health','list'];
 const needsAgent = !NO_AGENT_CMDS.includes(cmd);
 let agent = REGISTRY[who];
 let effectiveWho = who;
@@ -229,11 +230,12 @@ async function dispatch(kindLabel, rawPrompt, extra = {}) {
   const ag = REGISTRY[name];
   if (!ag) throw new Error('未知 agent: ' + name);
   const project = process.env.ORCH_PROJECT;
-  let tail = buildContext();
+  const memTail = buildContext();
+  let projectSlim = '';
   if (project) {
     try {
       const b = projectBrief(project, { slim: true });
-      if (b && !b.missing && b.slim) tail += `\n\n[项目接续 · ${b.name}]\n${b.slim}\n[/项目接续]\n`;
+      if (b && !b.missing && b.slim) projectSlim = `[项目接续 · ${b.name}]\n${b.slim}\n[/项目接续]`;
     } catch { /* 项目没注册就静默跳过，不挡派活 */ }
   }
 
@@ -242,25 +244,37 @@ async function dispatch(kindLabel, rawPrompt, extra = {}) {
   const codeTask = isCodeTask(rawPrompt);
   // workbuddy 是散文型（不主动给 JSON），默认不套契约；ORCH_WB_CONTRACT=1 可强制
   const wantContract = extra.contract ?? (process.env.ORCH_NO_CONTRACT !== '1' && (name !== 'workbuddy' || process.env.ORCH_WB_CONTRACT === '1'));
-  let base = ensureFenceHint(name, rawPrompt) + tail;
-  // 临时能力（ephemeral）：只把「有什么」压成 ≤1200 字符注入，全文按需读 ——
+
+  // 临时能力（ephemeral）：只把「有什么」压成一段注入，全文按需读 ——
   // 这样能力本身不占常驻上下文，会话结束自动失效。
+  let ephBlk = '';
   if (process.env.ORCH_NO_EPHEMERAL !== '1') {
-    try { const blk = ephBrief(); if (blk) base += blk; } catch { /* 读不到就当没有 */ }
+    try { ephBlk = ephBrief() || ''; } catch { /* 读不到就当没有 */ }
   }
+
+  let skillBlk = '';
   if (extra.skill) {
     try {
       const s = ephReadSkill(extra.skill, { maxChars: Number(process.env.ORCH_SKILL_CHARS || 3000) });
-      if (s.ok) base += `
-
-[技能正文 · ${extra.skill}${s.truncated ? ' · 已截断' : ''}]
-${s.text}
-[/技能正文]`;
+      if (s.ok) skillBlk = `[技能正文 · ${extra.skill}${s.truncated ? ' · 已截断' : ''}]\n${s.text}\n[/技能正文]`;
       else console.error('[临时能力] ' + s.reason);
     } catch { /* 技能读失败不挡派活 */ }
   }
-  const prompt = wantContract ? base + (codeTask ? JSON_CONTRACT : PROSE_CONTRACT) : base;
-  if (extra.dry) return { dry: true, ok: true, prompt, agent: name, codeTask, wantContract };
+
+  // 结构化组装 + 注意力预算记账（见 lib/prompt.mjs 顶部注释）
+  const asm = assemble({
+    task: ensureFenceHint(name, rawPrompt),
+    memory: memTail,
+    project: projectSlim,
+    ephemeral: ephBlk,
+    skill: skillBlk,
+    contract: wantContract ? (codeTask ? JSON_CONTRACT : PROSE_CONTRACT) : '',
+  });
+  const prompt = asm.prompt;
+  if (asm.overBudget && process.env.ORCH_QUIET_BUDGET !== '1') {
+    console.error('[上下文] 有分区超预算：' + asm.report.filter((r) => r.over).map((r) => r.section).join(','));
+  }
+  if (extra.dry) return { dry: true, ok: true, prompt, agent: name, codeTask, wantContract, budget: asm.report, totalTokens: asm.totalTokens };
 
 
   // 结果缓存（C②）：同 agent + 同 prompt 直接复用，不再付第二次钱。
@@ -636,6 +650,22 @@ try {
       console.log('  ✗ peek 失败：' + (e && e.message ? e.message : e));
       console.log('\n  结论：连不上 Agent 面板。可能端口被别的窗口占了，或 Trae 刚起来还没建好页面。');
     }
+    process.exit(0);
+  }
+
+  // ---- ctx：只看「这次派活会注入什么、各占多少 token」，零成本不调模型 ----
+  // 上下文是有限注意预算：团队记忆 + 项目接续 + 临时能力 + 技能正文 + 输出契约
+  // 全都挤在同一窗口里。这个命令把账摊开，超预算一眼能看见。
+  if (cmd === 'ctx') {
+    const q = [who, ...rest].filter((x) => x && x !== 'ctx').join(' ').trim() || '示例任务：写一个 python 函数 add(a,b)';
+    const name0 = (process.env.ORCH_CTX_AGENT || 'codebuddy').toLowerCase();
+    const r = await dispatch('ctx', q, { agent: name0, dry: true });
+    console.log(`[上下文] agent=${name0}  任务=${q.slice(0, 40)}`);
+    console.log('');
+    console.log(renderBudget({ report: r.budget, totalTokens: r.totalTokens, overBudget: (r.budget || []).some((x) => x.over) }));
+    console.log('');
+    console.log('提示：任务分区是大头时先拆任务；记忆/项目分区超预算就压 slim；');
+    console.log('      技能正文超预算改用 eph add + 按需读，别整篇塞进 prompt。');
     process.exit(0);
   }
 
