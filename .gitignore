@@ -1,6 +1,10 @@
 node_modules/
 *.log
 _probe*.mjs
+_probe/
+_bench/
+_tmp_*
+_post_tmp.md
 _yamlcheck*
 .DS_Store
 memory/.lock/
@@ -11,3 +15,7 @@ memory/budget.json
 memory/log.jsonl
 memory/.ephemeral.json
 memory/.ephemeral.json.tmp
+memory/db/
+.swarm/
+collab/mailbox/
+collab/.notified.json
