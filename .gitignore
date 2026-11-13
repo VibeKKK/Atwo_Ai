@@ -4,3 +4,4 @@ _probe*.mjs
 _yamlcheck*
 .DS_Store
 memory/.lock/
+memory/.prs.json

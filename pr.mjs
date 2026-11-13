@@ -19,7 +19,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT, isRepo, ensureRepo, hasCommit, headSha, currentBranch, branchExists, isDirty, changedFiles, commit, checkout, createBranch, mergeNoFf, deleteBranch, revertCommit, diffStat, diffText, changedBetween, logOneline } from './lib/vcs.mjs';
 
-const STATE_FILE = path.join(ROOT, 'memory', 'prs.json');
+// 账本放 gitignore 的隐藏文件：PR 流程自己反复改写它，一旦被跟踪就会在每次操作后
+// 把工作区弄脏，进而被自己的写入拦住（踩过一次）。对外可读审计写 memory/PR_LOG.md。
+const STATE_FILE = path.join(ROOT, 'memory', '.prs.json');
+const AUDIT_FILE = path.join(ROOT, 'memory', 'PR_LOG.md');
+const META_RE = /^memory\/(\.prs\.json|PR_LOG\.md)$/;
 const MAIN = 'main';
 
 function loadState() {
@@ -36,6 +40,17 @@ function loadState() {
 function saveState(s) {
   fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
   fs.writeFileSync(STATE_FILE, JSON.stringify(s, null, 2) + '\n', 'utf8');
+}
+
+const AUDIT_HEADER = ['# PR 审计日志', '', '每次状态变化追加一行。反查：git log -- memory/PR_LOG.md', '', ''].join('\n');
+
+function audit(line) {
+  try {
+    fs.mkdirSync(path.dirname(AUDIT_FILE), { recursive: true });
+    if (!fs.existsSync(AUDIT_FILE)) fs.writeFileSync(AUDIT_FILE, AUDIT_HEADER, 'utf8');
+    const stamp = new Date().toISOString().slice(0, 19).replace('T', ' ');
+    fs.appendFileSync(AUDIT_FILE, '- ' + stamp + '  ' + line + '\n', 'utf8');
+  } catch { /* 审计写失败不影响主流程 */ }
 }
 
 function today() {
@@ -63,7 +78,7 @@ function mustGet(s, id) {
 export function init() {
   const created = ensureRepo();
   const ignore = path.join(ROOT, '.gitignore');
-  const want = ['node_modules/', '*.log', '_probe*.mjs', '_yamlcheck*', '.DS_Store', 'memory/.lock/'];
+  const want = ['node_modules/', '*.log', '_probe*.mjs', '_yamlcheck*', '.DS_Store', 'memory/.lock/', 'memory/.prs.json'];
   let added = [];
   if (!fs.existsSync(ignore)) {
     fs.writeFileSync(ignore, want.join('\n') + '\n', 'utf8');
@@ -122,6 +137,7 @@ export function start(title, opts = {}) {
   };
   s.prs[id] = pr;
   saveState(s);
+  audit('`' + id + '` open      ' + pr.title + '  branch=' + pr.branch);
   return pr;
 }
 
@@ -136,11 +152,12 @@ export function finish(id, opts = {}) {
   const msg = opts.message || ('feat(' + (pr.agent || 'agent') + '): ' + pr.title);
   const r = commit(msg);
   pr.headSha = r.sha;
-  pr.files = changedBetween(pr.baseSha, pr.branch);
+  pr.files = changedBetween(pr.baseSha, pr.branch).filter((f) => !META_RE.test(f.file));
   pr.diffStat = diffStat(pr.baseSha + '..' + pr.branch);
   pr.status = pr.files.length ? 'ready' : 'empty';
   pr.finishedAt = new Date().toISOString();
   saveState(s);
+  audit('`' + pr.id + '` finish    ' + pr.status + '  files=' + pr.files.length);
   return pr;
 }
 
@@ -164,6 +181,8 @@ export function approve(id, opts = {}) {
   pr.approvedAt = new Date().toISOString();
   pr.approvedBy = opts.by || 'rank1';
   saveState(s);
+  audit('`' + pr.id + '` merged    ' + (mergeSha ? mergeSha.slice(0, 8) : ''));
+  try { commit('docs(pr): 记录 ' + pr.id + ' 合并'); } catch { }
   return pr;
 }
 
@@ -178,6 +197,7 @@ export function reject(id, reason = '') {
   pr.rejectedAt = new Date().toISOString();
   pr.rejectReason = reason;
   saveState(s);
+  audit('`' + pr.id + '` rejected  ' + (reason || '(无原因)'));
   return pr;
 }
 
@@ -196,6 +216,8 @@ export function undo(id) {
   pr.revertSha = sha;
   pr.revertedAt = new Date().toISOString();
   saveState(s);
+  audit('`' + pr.id + '` reverted  ' + (sha ? sha.slice(0, 8) : ''));
+  try { commit('docs(pr): 记录 ' + pr.id + ' 撤回'); } catch { }
   return pr;
 }
 
