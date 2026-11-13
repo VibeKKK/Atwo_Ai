@@ -26,3 +26,4 @@ DSH 与其他 AI 之间的派活/互审/共享记忆通道
 - 2026-11-13 13:34  trae 适配层优化完成并验证：自动拉起+清ELECTRON_RUN_AS_NODE+保留换行+清代码壳；实测 top_lnk 19行缩进完整、py_compile通过、结果与真值一致。见 SHARED.md §11
 - 2026-11-13 15:16  dsh-orchestra 插件 v0.1.0 @ C:/Users/kkk/.dsh/plugins-src/dsh-orchestra：假 ctx 验证 8/8 通过（含真实派活 21s），YAML patch 解析 24 条命中；待重启生效
 - 2026-11-13 15:20  trae 误判额度已修（营销横幅 + busy 判据双错），五条链路复测全过
+- 2026-11-13 18:20  A/B/C①② 落地：preflight 0.4s 报错、语法闸、codebuddy -67% token、缓存 7.2s→0.08s

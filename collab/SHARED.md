@@ -384,3 +384,20 @@ C protected 动 authority   → rank2 审被拒（protected 级）
 ### 工具层已接上
 插件 `dsh-orchestra` 的 `orchestra_pr` 增加 `pending` / `review` 两个 action（`by` / `note` 参数），
 脱机验证从 12 项扩到 **15 项，全通过**。
+
+## §15 2026-11-13 18:30 · 能治的治了（rank1 执行记录）
+
+用户令：`能治的治了`。以下四项已落地并实测，全部零 token 或大幅降费。
+
+| 项 | 做法 | 实测 |
+|---|---|---|
+| A 前置体检 | `lib/preflight.mjs`，派活前 3 项 DOM 断言，结果缓存 60 秒，失败抛 `EUI_CHANGED` | 故意注入坏选择器 → **0.4 秒**报出「界面已变 + 哪个选择器失效」，原来要等 240 秒超时 |
+| B 语法闸 | `lib/syntax.mjs`，交付前跑 `py_compile` / `node --check`，失败带编译器原文自动重试一次 | 好码通过；坏缩进被拦下并在输出尾部打 `[语法未通过]` |
+| C① 砍固定开销 | codebuddy 加 `--tools Write,Edit,Read --no-session-persistence --max-turns 1` | 输入 token **23,130 → 7,633（−67%）**；`--tools ""` 可到 6,175 但改不了文件，故不作默认 |
+| C② 结果缓存 | `lib/cache.mjs`，键 = 原始问题 + 契约模式，TTL 24h，只缓存成功输出 | 同一问题第二次：**7.2 秒 → 0.08 秒，0 token** |
+
+两个连带修正：
+- 缓存键最初用了拼装后的 prompt（含团队记忆注入），导致永远未命中 → 改回原始问题。
+- Trae 「自动开新对话」实测不稳（新对话后输入框需重新聚焦，Enter 不提交）→ 降级为 opt-in `ORCH_TRAE_NEW_CHAT=1`；同时加 **45 秒 `ESTALE` 快速失败**，把「会话满 / 答案与上轮相同」这类判不出的情况从干等 4 分钟变成 45 秒明确报错。
+
+名册纠偏（§14 的 rank3）：执行层只算**真能派活**的 `trae` + `codebuddy`。`workbuddy` 只提供模型额度，5.11.2 更新后丢弃 `--remote-debugging-port`、内部只有 `/api/_evlog` 私有路由，没有对话接口 → 不计入执行层，等方案 C（逆向 app.asar）真通了再写回。

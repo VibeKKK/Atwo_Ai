@@ -240,7 +240,9 @@ async function dispatch(kindLabel, rawPrompt, extra = {}) {
 
   // 结果缓存（C②）：同 agent + 同 prompt 直接复用，不再付第二次钱。
   // 只查「成功输出」；命中后仍走同样的渲染与语法校验路径（语法再验一次很便宜）。
-  const cacheKeyPrompt = prompt + ' ' + (wantContract ? 'C' : 'R');
+  // 缓存键用「原始问题」而不是拼装后的 prompt —— 团队记忆注入每次都变，
+  // 用拼装后的 key 会导致永远未命中（实测过：同一问题第二次仍然真跑）。
+  const cacheKeyPrompt = rawPrompt.trim() + '|' + (wantContract ? 'C' : 'R');
   const cachedHit = cacheGet(name, cacheKeyPrompt);
   if (cachedHit && !extra.noCache) {
     console.error('[缓存] 命中 ' + name + ' sha=' + cacheKeyPrompt.length + 'B → 0 token');
