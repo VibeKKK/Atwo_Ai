@@ -1,0 +1,42 @@
+{
+  "ts": "20261113-221726",
+  "agent": "trae",
+  "total": 1,
+  "pass": 1,
+  "rate": 100,
+  "durationMs": 10547,
+  "avgMs": 8015,
+  "rows": [
+    {
+      "id": "py-retry-decorator",
+      "agent": "trae",
+      "pass": true,
+      "ms": 8015,
+      "err": null,
+      "checks": [
+        {
+          "name": "非空",
+          "ok": true,
+          "detail": "685 字符"
+        },
+        {
+          "name": "编译",
+          "ok": true,
+          "detail": "python 通过"
+        },
+        {
+          "name": "必含#1",
+          "ok": true,
+          "detail": "def retry"
+        },
+        {
+          "name": "行为",
+          "ok": true,
+          "detail": "UNIT-OK"
+        }
+      ],
+      "chars": 685,
+      "text": "import functools\nimport time\n\ndef retry(times=3, delay=0):\n    if times < 1:\n        raise ValueError(\"times 必须 >= 1\")\n\n    def decorator(func):\n        @functools.wraps(func)\n        def wrapper(*args, **kwargs):\n            last_error = None\n            for attempt in range(times):\n                try:\n                    return func(*args, **kwargs)\n                except Exception as error:\n                    last_error = error\n                    if attempt < times - 1 and delay > 0:\n                        time.sleep(delay)\n            raise last_error\n\n        return wrapper\n\n    return decorator\n\n行为说明：\n\ntimes\n 是总尝试次数（默认 3），不是重试次数。\n\n只捕获\nException\n，\nKeyboardInterrupt\n、`"
+    }
+  ]
+}

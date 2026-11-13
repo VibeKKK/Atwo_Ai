@@ -1,0 +1,274 @@
+{
+  "ts": "20261113-222904",
+  "agent": "codebuddy",
+  "total": 8,
+  "pass": 8,
+  "rate": 100,
+  "durationMs": 456542,
+  "avgMs": 55868,
+  "rows": [
+    {
+      "id": "py-top-lnk",
+      "agent": "codebuddy",
+      "pass": true,
+      "ms": 43013,
+      "err": null,
+      "checks": [
+        {
+          "name": "非空",
+          "ok": true,
+          "detail": "814 字符"
+        },
+        {
+          "name": "编译",
+          "ok": true,
+          "detail": "python 通过"
+        },
+        {
+          "name": "必含#1",
+          "ok": true,
+          "detail": "def top_lnk"
+        },
+        {
+          "name": "禁含#1",
+          "ok": true,
+          "detail": "import pandas"
+        },
+        {
+          "name": "禁含#2",
+          "ok": true,
+          "detail": "import numpy"
+        },
+        {
+          "name": "行为",
+          "ok": true,
+          "detail": "UNIT-OK"
+        }
+      ],
+      "chars": 814,
+      "text": "```python\nimport os\n\n\ndef top_lnk(root, n):\n    \"\"\"递归查找 root 下所有 .lnk 文件，按大小降序返回前 n 个 (size, path)。\"\"\"\n    if n <= 0:\n        return []\n\n    found = []\n    for dirpath, _, filenames in os.walk(root):\n        for name in filenames:\n            if not name.lower().endswith(\".lnk\"):\n                continue\n            path = os.path.join(dirpath, name)\n            try:\n                found.append((os.path.getsize(path), path))\n            except OSError:\n                continue\n\n    found.sort(key=lambda item: (-item[0], item[1]))\n    return found[:n]\n```\n\n要点：\n\n- `os.walk` 默认不跟随符号链接，避免循环；只递归目录。\n- 扩展名用 `.lower().endswith(\".lnk\")`，兼容 `.LNK`，且不会误匹配 `x.lnk.bak`。\n- `getsize` 可能抛 `OSError`（权限、断链等），跳过即可。\n- 排序用 `(-size, path)`，大小相同时按路径升序，结果稳定可复现。\n- 全程只用标准库 `os`。\n\n那段「共享工作记忆 / 临时能力」与本任务无关，未读取也未使用其中的 SKILL / 工具路径。"
+    },
+    {
+      "id": "py-dedup-keep-order",
+      "agent": "codebuddy",
+      "pass": true,
+      "ms": 140709,
+      "err": null,
+      "checks": [
+        {
+          "name": "非空",
+          "ok": true,
+          "detail": "1167 字符"
+        },
+        {
+          "name": "编译",
+          "ok": true,
+          "detail": "python 通过"
+        },
+        {
+          "name": "必含#1",
+          "ok": true,
+          "detail": "def dedup"
+        },
+        {
+          "name": "行为",
+          "ok": true,
+          "detail": "UNIT-OK"
+        }
+      ],
+      "chars": 1167,
+      "text": "核心难点：`set` 不能放不可哈希元素，而且**不能只靠哈希**——可哈希元素也可能和不可哈希元素相等（例如 `frozenset({1,2}) == {1,2}`）。最稳妥的做法是用 `==` 和已保留元素逐一比较。\n\n```python\ndef dedup(items):\n    result = []\n    for item in items:\n        if not any(item == kept for kept in result):\n            result.append(item)\n    return result\n```\n\n- 保持首次出现顺序，按 `==` 判重，dict / list / set 都支持，纯标准库。\n- O(n²)：对不可哈希元素这是无法避免的（除非自己定义规范化键）。\n- 语义跟随 Python 相等规则：`True == 1` 视为重复、`float('nan') != 自身` 不会被去掉。\n\n如果输入以可哈希元素为主且数据量大，加一条快速路径（仍保证跨类型正确）：\n\n```python\ndef dedup(items):\n    result = []\n    seen = set()        # 已保留的可哈希元素，O(1) 判重\n    unhashable = []     # 已保留的不可哈希元素\n    for item in items:\n        try:\n            hash(item)\n        except TypeError:\n            if any(item == kept for kept in result):   # 覆盖所有已保留元素\n                continue\n            unhashable.append(item)\n        else:\n            # 还要查 unhashable，才能捕获 frozenset == set 这类跨类型相等\n            if item in seen or any(item == x for x in unhashable):\n                continue\n            seen.add(item)\n        result.append(item)\n    return result\n```\n\n```python\ndedup([{'a': 1}, {'a': 1}, {'a': 2}, 3, 3, [1], [1], [2]])\n# -> [{'a': 1}, {'a': 2}, 3, [1], [2]]\n```"
+    },
+    {
+      "id": "py-retry-decorator",
+      "agent": "codebuddy",
+      "pass": true,
+      "ms": 51960,
+      "err": null,
+      "checks": [
+        {
+          "name": "非空",
+          "ok": true,
+          "detail": "1534 字符"
+        },
+        {
+          "name": "编译",
+          "ok": true,
+          "detail": "python 通过"
+        },
+        {
+          "name": "必含#1",
+          "ok": true,
+          "detail": "def retry"
+        },
+        {
+          "name": "行为",
+          "ok": true,
+          "detail": "UNIT-OK"
+        }
+      ],
+      "chars": 1534,
+      "text": "只用标准库（`functools`、`time`）：\n\n```python\nimport functools\nimport time\n\n\ndef retry(times=3, delay=0):\n    \"\"\"异常重试装饰器。\n\n    times: 总尝试次数（含第一次），默认 3，即最多调用 3 次。\n    delay: 每次重试前等待的秒数，0 表示不等待。\n    全部失败时抛出最后一次的异常。\n    \"\"\"\n    if times < 1:\n        raise ValueError(\"times must be >= 1\")\n\n    def decorator(func):\n        @functools.wraps(func)\n        def wrapper(*args, **kwargs):\n            for attempt in range(times):\n                try:\n                    return func(*args, **kwargs)\n                except Exception:\n                    if attempt == times - 1:\n                        raise            # 最后一次：原样抛出，保留完整 traceback\n                    if delay:\n                        time.sleep(delay)\n        return wrapper\n\n    return decorator\n```\n\n几个设计点：\n\n- **`times` 是「总尝试次数」**（含首次），默认 3 → 最多调用 3 次。若你想表达「重试 3 次」= 共 4 次调用，把 `range(times)` 改成 `range(times + 1)` 即可。\n- **最后一次用裸 `raise`**，直接重抛当前异常、保留原始 traceback，不需要额外变量存 `last_exc`。\n- **只捕获 `Exception`**，不会吞掉 `KeyboardInterrupt` / `SystemExit`；需要限定异常类型时把 `except Exception` 换掉即可。\n- **只在「还有下一次」时 `sleep`**，避免最后一次失败后白白等待；`delay=0` 时完全不调用 `time.sleep`。\n- `functools.wraps` 保留被装饰函数的 `__name__`、`__doc__` 等元信息。\n\n用法：\n\n```python\n@retry(times=3, delay=0.5)\ndef fetch(url):\n    ...  # 可能抛异常\n\n\n# 验证「全部失败抛最后一个异常」\ncalls = {\"n\": 0}\n\n@retry(times=3, delay=0)\ndef flaky():\n    calls[\"n\"] += 1\n    raise RuntimeError(f\"fail #{calls['n']}\")\n\ntry:\n    flaky()\nexcept RuntimeError as e:\n    print(e)           # fail #3\n    print(calls[\"n\"])  # 3\n```\n\n需要我把它存成仓库里的某个文件（比如 `utils/retry.py`）吗？告诉我路径就行。"
+    },
+    {
+      "id": "py-csv-dict",
+      "agent": "codebuddy",
+      "pass": true,
+      "ms": 68906,
+      "err": null,
+      "checks": [
+        {
+          "name": "非空",
+          "ok": true,
+          "detail": "903 字符"
+        },
+        {
+          "name": "编译",
+          "ok": true,
+          "detail": "python 通过"
+        },
+        {
+          "name": "必含#1",
+          "ok": true,
+          "detail": "DictReader"
+        },
+        {
+          "name": "行为",
+          "ok": true,
+          "detail": "UNIT-OK"
+        }
+      ],
+      "chars": 903,
+      "text": "```python\nimport csv\nimport math\n\ndef read_csv_dict(path: str) -> list[dict]:\n    def convert(value):\n        if value is None or value == '':\n            return ''\n        if not isinstance(value, str):\n            return value\n        try:\n            return int(value)\n        except ValueError:\n            pass\n        try:\n            num = float(value)\n            return num if math.isfinite(num) else value\n        except ValueError:\n            return value\n\n    with open(path, newline='', encoding='utf-8-sig') as f:\n        return [\n            {k: convert(v) for k, v in row.items()}\n            for row in csv.DictReader(f)\n        ]\n```\n\n说明：\n- 按**逐值**判断：`\"12\"`→`12`、`\"-5\"`→`-5`、`\"3.14\"`/`\"1e3\"`→`float`；非数字原样保留。\n- 空字符串，以及 `DictReader` 对缺列补的 `None`，都归为 `''`。\n- `nan`/`inf` 不算数字，保留字符串，避免下游拿到非有限值。\n- `newline=''` 是 `csv` 模块要求；`utf-8-sig` 顺带吃掉 BOM。\n\n需要我把它写进仓库某个文件的话，告诉我路径（当前没有列目录/执行命令的工具可用）。"
+    },
+    {
+      "id": "py-bisect-insort",
+      "agent": "codebuddy",
+      "pass": true,
+      "ms": 31834,
+      "err": null,
+      "checks": [
+        {
+          "name": "非空",
+          "ok": true,
+          "detail": "586 字符"
+        },
+        {
+          "name": "编译",
+          "ok": true,
+          "detail": "python 通过"
+        },
+        {
+          "name": "必含#1",
+          "ok": true,
+          "detail": "def insert_sorted"
+        },
+        {
+          "name": "行为",
+          "ok": true,
+          "detail": "UNIT-OK"
+        }
+      ],
+      "chars": 586,
+      "text": "用手动二分查找定位插入点，再切片拼出新列表（原列表不变）：\n\n```python\ndef insert_sorted(arr, x):\n    lo, hi = 0, len(arr)\n    while lo < hi:\n        mid = (lo + hi) // 2\n        if arr[mid] < x:\n            lo = mid + 1\n        else:\n            hi = mid          # 相等时继续往左，插到重复元素最前\n    return arr[:lo] + [x] + arr[lo:]\n```\n\n要点：\n- 查找 `O(log n)`，返回的是 `bisect_left` 语义的最左插入位置；若想插到重复元素之后，把 `arr[mid] < x` 改成 `arr[mid] <= x`。\n- 通过 `arr[:lo] + [x] + arr[lo:]` 生成新列表，不修改 `arr`。\n- 空列表、插到头/尾都自然覆盖，无需特判。\n\n示例：`insert_sorted([1, 3, 3, 5], 3)` → `[1, 3, 3, 3, 5]`\n\n标准库等价写法是 `bisect.bisect_left(arr, x)` 配合同样的切片，这里按你的要求显式写了二分循环。"
+    },
+    {
+      "id": "js-clamp",
+      "agent": "codebuddy",
+      "pass": true,
+      "ms": 23327,
+      "err": null,
+      "checks": [
+        {
+          "name": "非空",
+          "ok": true,
+          "detail": "441 字符"
+        },
+        {
+          "name": "编译",
+          "ok": true,
+          "detail": "javascript 通过"
+        },
+        {
+          "name": "必含#1",
+          "ok": true,
+          "detail": "function clamp"
+        },
+        {
+          "name": "必含#2",
+          "ok": true,
+          "detail": "Math"
+        },
+        {
+          "name": "长度",
+          "ok": true,
+          "detail": "441/40"
+        }
+      ],
+      "chars": 441,
+      "text": "```js\nfunction clamp(n, min, max) {\n  if (min > max) {\n    [min, max] = [max, min];\n  }\n  return Math.min(Math.max(n, min), max);\n}\n```\n\n示例：\n\n```js\nclamp(5, 0, 10);    // 5\nclamp(-3, 0, 10);   // 0\nclamp(99, 0, 10);   // 10\nclamp(5, 10, 0);    // 5  (min>max 先交换成 [0,10])\nclamp(15, 10, 0);   // 10\n```\n\n`Math.max/Math.min` 会把参数转成数字，所以传入数字字符串也会返回数字。\n\n附带说明：消息里的「共享工作记忆」（上一条 Python 任务）和「临时能力」（skill/zipalign/plugin）与本次任务无关，我没有使用它们，也没有把它们当作配置写入。"
+    },
+    {
+      "id": "js-debounce",
+      "agent": "codebuddy",
+      "pass": true,
+      "ms": 16083,
+      "err": null,
+      "checks": [
+        {
+          "name": "非空",
+          "ok": true,
+          "detail": "557 字符"
+        },
+        {
+          "name": "编译",
+          "ok": true,
+          "detail": "javascript 通过"
+        },
+        {
+          "name": "必含#1",
+          "ok": true,
+          "detail": "setTimeout"
+        },
+        {
+          "name": "必含#2",
+          "ok": true,
+          "detail": "clearTimeout"
+        }
+      ],
+      "chars": 557,
+      "text": "```js\nfunction debounce(fn, wait) {\n  let timer = null;\n  return function (...args) {\n    clearTimeout(timer);\n    timer = setTimeout(() => {\n      fn.apply(this, args);\n    }, wait);\n  };\n}\n```\n\n要点：\n- 每次调用先 `clearTimeout` 取消上一次计时，只有最后一次调用的定时器会触发，实现「最后一次调用后 wait 毫秒才执行」。\n- 用普通 `function` 保留调用时的 `this`，并用 `apply(this, args)` 透传参数。\n- `timer` 通过闭包持有，各实例互不干扰。\n\n用法示例：\n\n```js\nconst onResize = debounce(() => console.log('resize done'), 300);\nwindow.addEventListener('resize', onResize);\n```\n\n如果你还需要 `cancel()`／`flush()`（立即执行）或「首次立即执行、之后才防抖」的 leading 选项，告诉我，我再加上。"
+    },
+    {
+      "id": "py-log-group",
+      "agent": "codebuddy",
+      "pass": true,
+      "ms": 71115,
+      "err": null,
+      "checks": [
+        {
+          "name": "非空",
+          "ok": true,
+          "detail": "1319 字符"
+        },
+        {
+          "name": "编译",
+          "ok": true,
+          "detail": "python 通过"
+        },
+        {
+          "name": "必含#1",
+          "ok": true,
+          "detail": "def group_errors"
+        },
+        {
+          "name": "长度",
+          "ok": true,
+          "detail": "1319/80"
+        }
+      ],
+      "chars": 1319,
+      "text": "```python\nimport re\n\n_TIMESTAMP = re.compile(\n    r\"^\\s*(?:\"\n    r\"\\[[^\\]]+\\]\"                                     # [2026-11-13 22:27:01,123]\n    r\"|\\d{4}[-/]\\d{2}[-/]\\d{2}[T ]\\d{2}:\\d{2}:\\d{2}(?:[.,]\\d+)?(?:Z|[+-]\\d{2}:?\\d{2})?\"  # 2026-11-13T22:27:01.123Z\n    r\"|\\d{2}:\\d{2}:\\d{2}(?:[.,]\\d+)?\"                # 22:27:01.123\n    r\")\\s*\"\n)\n_LEVEL = re.compile(r\"\\b(?:ERROR|FATAL)\\b\")\n\n\ndef group_errors(lines: list[str]) -> dict[str, list[str]]:\n    groups: dict[str, list[str]] = {}\n    for line in lines:\n        if not _LEVEL.search(line):\n            continue\n        key = _TIMESTAMP.sub(\"\", line, count=1).strip()\n        groups.setdefault(key, []).append(line)\n    return groups\n```\n\nExample:\n\n```python\nlines = [\n    \"2026-11-13 22:27:01,123 ERROR Connection refused\",\n    \"2026-11-13 22:27:05,901 ERROR Connection refused\",\n    \"[2026-11-13 22:27:02] FATAL disk full\",\n    \"2026-11-13 22:27:03,000 INFO ok\",\n]\n# -> {\n#      \"ERROR Connection refused\": [两条原始行],\n#      \"FATAL disk full\": [\"[2026-11-13 22:27:02] FATAL disk full\"],\n#    }\n```\n\n约定（与字面描述一致）：\n- key = 去掉开头时间戳前缀后的整段文本，`ERROR`/`FATAL` 级别词保留；这样不同时间戳的同一条错误会归到一组。\n- `ERROR|FATAL` 按全词、区分大小写匹配（日志级别通常大写），不含这些词的行直接丢弃。\n- 值是未经改动的原始整行，dict 按首次出现顺序保留键。\n\n如果你的日志时间戳是 syslog 风格（`Nov 13 22:27:01`）或带额外字段（线程名、模块名），告诉我格式，我扩展 `_TIMESTAMP` 即可。需要我落到某个 `.py` 文件里也直接说路径。"
+    }
+  ]
+}
