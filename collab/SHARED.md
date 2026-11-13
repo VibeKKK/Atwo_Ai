@@ -343,3 +343,44 @@ git log → feat(pr-…) → merge: PR-… → revert: …
 ### 插件侧
 `dsh-orchestra` 新增第 4 个工具 `orchestra_pr {action, id?, reason?}`，
 脱机验证 12/12 通过（含「approve 缺 id 时被拒」的护栏用例）。
+
+## 14. 审阅门：rank1/rank2 按风险共管提案（2026-11-13 16:52 · 用户令 + rank1 实现并实测）
+
+用户原话：`配置一下这个过程可以由总管的AI和副总管的AI监管一部分责任`
+
+### 为什么分级，而不是"两人都签"
+两人都签 = 对方离线就永远合不了；一人全签 = 等于没分摊。
+所以按**改动的可信影响面**分级：动了代码要总管签字，只动文档副总管就能放行，动了治理文件总管签字且副总管必须知情。
+
+| 风险级 | 判定 | 谁能放行 | 必须知情 |
+|---|---|---|---|
+| `docs` | 全部落在 `docs_prefixes`（collab/ memory/ docs/ README） | rank2 或 rank1 | — |
+| `code` | 其余（改了代码） | **只有 rank1** | — |
+| `protected` | 命中 `protected_paths`（authority.json / SHARED.md / pr.mjs / lib/vcs.mjs / orchestra.mjs / package.json / cordis.patch.yml） | **只有 rank1** | **rank2** |
+
+### 实现要点（`pr.mjs`）
+- `classify(files)` → 风险级；`reviewGate(pr)` → `{risk, allowed, satisfied, satisfiedBy, missingInformed}`
+- `review <id> --by rank1|rank2 [--note "意见"] [--reject]`：**该级无权审的人直接抛错**，不留"审了但不算"的模糊状态
+- `approve <id>`：gate 不满足就抛错，报错里直接给可复制的命令
+- **`missingInformed` 只告警不阻塞**：`console.error('[审阅] 注意：protected 级改动，rank2 尚无知情记录（已记入审计）')` + 审计一行 `warn`。理由同上——阻塞会造成离线死锁。
+- `pending`：看待审队列，每件带风险级 + 已签 + 还缺谁
+- 审阅记录写进 `pr.reviews`（by/verdict/note/risk/时间）并落 `memory/PR_LOG.md`
+
+### 规则文件
+`collab/authority.json` **version 4** 新增 `pr_policy`（6 条 rules）：
+docs 级 rank2 可放行｜code 级必须 rank1｜protected 级 rank1 审 + rank2 知情｜
+rank1 覆盖 rank2 必须在 `--note` 写原因｜审阅只记意见不自动合并｜谁审谁签字。
+
+### 三种场景实测（真跑，不是推演）
+```
+A docs 级   改 README      → rank2 审 → 可以合并 → merged 661f89c9
+B code 级   加 .mjs 文件   → rank2 审被拒：code 级提案的审阅人应是 rank1，你是 rank2
+                            → 不审直接合并被拒：需要 rank1 审阅后才能合并
+                            → rank1 审后 merged 8fde6d17
+C protected 动 authority   → rank2 审被拒（protected 级）
+                            → rank1 审后 approve 打出告警「rank2 尚无知情记录」→ merged e35ced55
+```
+
+### 工具层已接上
+插件 `dsh-orchestra` 的 `orchestra_pr` 增加 `pending` / `review` 两个 action（`by` / `note` 参数），
+脱机验证从 12 项扩到 **15 项，全通过**。
