@@ -298,3 +298,48 @@ pick 三条路由                    → codebuddy / codebuddy(混合) / trae
 health                          → trae ok 12 次剩 48；codebuddy ok 5 次剩 35
 budget                          → codebuddy in 99,742 / 5 次
 ```
+
+---
+
+## 13. 提案式改动（PR）— 2026-11-13 16:35
+
+用户令：`给这个软件的功能增加git管理可以实现任务的更改回退` + `增加pr思想理念`。
+落地为「分支即提案」，主干永不被 agent 直接改。
+
+### 生命周期
+```
+pr start "<标题>"      开提案，切到 orch/pr-<id> 分支干活
+pr finish              提交成型 → ready，列出本提案改了哪些文件
+pr approve <id>        合回 main（--no-ff，保留一条合并记录）
+pr reject  <id> [原因] 丢弃分支，主干不受影响
+pr undo    <id>        已合并的用反向提交撤掉，历史仍可查
+pr list / show / status
+```
+派活时设 `ORCH_PR=1` 会自动 start + finish，人只需要 approve 或 reject。
+
+### 分工（重要）
+- **git 承载历史**：`feat(pr-<id>): …` / `merge: PR-<id>` / `revert: …`，
+  `git log --grep PR-20261113` 就能反查某次提案的全部轨迹。
+- **`memory/PR_LOG.md` 不进 git**，只给人现场看。原因：append-only 日志在
+  提案分支和主干各自追加，合并时必然 add/add 冲突，`pr approve` 直接失败（踩过）。
+
+### 踩过的四个坑（都修了）
+1. 账本被跟踪 → 每次操作把工作区弄脏，被自己的 `isDirty` 拦死 → 账本改 gitignore。
+2. `git revert` 对 merge commit 必须 `-m 1`，否则报 `is a merge but no -m option was given`。
+3. 提交信息 `feat(agent):` 反查不到提案号 → 改 `feat(pr-<id>):`。
+4. agent 收尾会把 `memory/STATE.md` 刷新 → `approve` 被拦。现在只放行
+   `META_TOLERANT`（STATE/log/budget/PR_LOG/.prs）这几个运行时文件并单独提交，
+   其余脏文件仍然拦。
+
+### 端到端实测（真跑，含合并与撤回）
+```
+ORCH_PR=1 ask codebuddy "创建 _pr_test.txt"  → [PR] ready 文件 1 个：_pr_test.txt
+pr approve PR-20261113-001                  → merged 79e77e4a，主干出现该文件
+pr undo    PR-20261113-001                  → reverted fefb7acb，文件消失
+git log → feat(pr-…) → merge: PR-… → revert: …
+工作区全程干净
+```
+
+### 插件侧
+`dsh-orchestra` 新增第 4 个工具 `orchestra_pr {action, id?, reason?}`，
+脱机验证 12/12 通过（含「approve 缺 id 时被拒」的护栏用例）。
