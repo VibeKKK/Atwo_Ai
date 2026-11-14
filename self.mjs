@@ -59,6 +59,10 @@ function buildPrompt(task) {
     '3. 不要用第三方依赖，不要改 package.json 的 name/bin；',
     '4. 保持原有导出与函数签名兼容，除非任务要求改；',
     '5. 代码里不要写 TODO，要能直接跑。',
+    '',
+    '⚠ 不要先说计划和步骤，也不要问问题：能读文件就自己读（只读），读不到就按你理解的接口写，',
+    '⚠ 但最终回答**必须**只包含文件围栏（可以有极简的说明在围栏之外）。',
+    '⚠ 不要自己调用 Write/Edit 改文件——落盘由调用方统一做，你只负责给内容。',
   ].join('\n');
 }
 
@@ -147,11 +151,14 @@ if (started.code === 0) {
 }
 
 say('[2/6] 交给 ' + agent + ' 出方案');
-// 关键：纯文本任务要把工具关掉（CODEBUDDY_TOOLS=''），否则它试图 Write 文件、被 max-turns 掐断，
-// 得到的是 "Max turns (1) exceeded" 而不是文件内容（2026-11-14 首次自举踩到）。
+// 2026-11-14 两次踩坑后的定稿：
+//   ① 完全关工具（CODEBUDDY_TOOLS=''）→ 模型只会念叨「我先去看一下项目」然后不给文件；
+//   ② max-turns 硬编码 1 → 直接 "Max turns (1) exceeded"。
+// 现在：放开只读工具 Read 让它自己核对 API，禁 Write/Edit（落盘由本脚本统一做，便于回滚）；
+// 超时放到 660s（一次生成一整个测试文件在 240s 里做不完）。
 const asked = run(['orchestra.mjs', 'ask', agent, buildPrompt(task)], {
-  timeout: 300000,
-  env: { CODEBUDDY_TOOLS: '', CODEBUDDY_MAX_TURNS: '4' },
+  timeout: 660000,
+  env: { CODEBUDDY_TOOLS: 'Read', CODEBUDDY_MAX_TURNS: '8' },
 });
 const answer = asked.stdout || asked.out;
 if (!answer.trim()) { say('  没拿到回答'); process.exit(1); }
