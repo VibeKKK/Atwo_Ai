@@ -15,11 +15,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
-import { execSync } from 'node:child_process';
+import { execSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { askTrae, peekTrae, meta as traeMeta } from './agents/trae.mjs';
+import { askTrae, askTraeFile, peekTrae, meta as traeMeta } from './agents/trae.mjs';
 import { askCodeBuddy, peekCodeBuddy, meta as cbMeta } from './agents/codebuddy.mjs';
-import { ask as askWorkBuddy, doctor as wbDoctor, META as wbMeta } from './agents/workbuddy.mjs';
+import { ask as askWorkBuddy, askFile as askWbFile, doctor as wbDoctor, META as wbMeta } from './agents/workbuddy.mjs';
+import { askDoubao, doubaoDoctor, doubaoMeta } from './agents/doubao.mjs';
 import { readState, writeState, appendLog, readLog, setLastJob, buildContext } from './lib/memory.mjs';
 import { brief as projectBrief } from './lib/project-memory.mjs';
 import { JSON_CONTRACT, PROSE_CONTRACT, parseContract, renderContract, fallbackCode, isCodeTask } from './lib/contract.mjs';
@@ -43,6 +44,8 @@ const REGISTRY = {
   trae: { ask: askTrae, peek: peekTrae, meta: traeMeta },
   codebuddy: { ask: askCodeBuddy, peek: peekCodeBuddy, meta: cbMeta },
   workbuddy: { ask: askWorkBuddy, peek: null, meta: wbMeta, doctor: wbDoctor },
+  // doubao：文件信箱通道，经实测字符零损伤（22.8s，反引号/双星号/井号全保留）
+  doubao: { ask: askDoubao, peek: null, meta: doubaoMeta, doctor: doubaoDoctor },
 };
 
 // ---- 自动选 agent（实测依据见 SHARED.md §10）----
@@ -85,6 +88,10 @@ const STARTUP_GC = (() => { try { return ephGc(); } catch { return 0; } })();   
 
 function usage() {
   console.log(`Orchestra — AI 协作台
+  do "<一句话目标>"           一句话入口：替你判断该派一件还是拆开并行
+                             --n 4           并行度（默认按目标里的数字取）
+                             --agent trae    强制指定通道
+                             --dry           只打印判断和将要执行的命令，不真跑
   ask <agent> "<prompt>"     派任务（自动附带共享工作记忆）
   ask auto "<prompt>"        按任务性质自动挑 agent（代码→codebuddy，评审/解释→trae）
   auto "<prompt>"            同上，更短的写法
@@ -233,7 +240,7 @@ if (cmd === 'memory') {
     process.exit(0);
   }
 
-const NO_AGENT_CMDS = ['eph','ctx','duo','stats','auto','pick','doctor','probe','budget','health','list','swarm','sub','top'];
+const NO_AGENT_CMDS = ['eph','ctx','duo','stats','auto','pick','doctor','probe','budget','health','list','swarm','sub','top','do'];
 const needsAgent = !NO_AGENT_CMDS.includes(cmd);
 // 第一个词既不是已知 agent 也不是 auto → 它是 prompt 的开头，改走自动选路。
 if (needsAgent && who && who !== 'auto' && !REGISTRY[who]) { rest.unshift(who); who = 'auto'; }
@@ -389,8 +396,27 @@ async function dispatch(kindLabel, rawPrompt, extra = {}) {
   // 锁池：trae 恒为 1 路（只有一个 Agent 页面，并发会互相污染回答）；
   // codebuddy 是独立 CLI 进程，可以开多路，否则等于自废吞吐。
   const slots = Number(process.env['ORCH_SLOTS_' + name] || (name === 'codebuddy' ? 6 : 1)) || 1;
+  // 信箱通道：DOM 抓取必丢语法字符（实测反引号全丢、## 变 h2 后消失、成对星号非对称损伤），
+  // 给每条通道各写一套还原补丁等于永久打地鼠。所以代码类任务默认走文件信箱——产物由对方
+  // 直接写盘，字节零损伤。散文类仍走直连（丢个别字符影响小，但省一轮写出+轮询）。
+  const MAILBOX_ASK = { trae: askTraeFile, workbuddy: askWbFile };
   const runOnce = (p) => withLockPool(name, slots, () => withTimeout(
-    () => ag.ask(p, { timeoutMs: TASK_TIMEOUT_MS }),
+    async () => {
+      const mb = MAILBOX_ASK[name];
+      if (mb && codeTask && extra.mailbox !== false) {
+        try {
+          const fr = await mb(p, {});
+          const txt = fr.text || fr.raw || fr.answer || '';
+          if (String(txt).trim()) {
+            console.error('[信箱] ' + name + ' 写盘回来 ' + String(txt).length + ' 字符（无损）');
+            return { ok: true, addedText: String(txt), usage: { in: 0, out: 0 }, viaMailbox: true };
+          }
+        } catch (e) {
+          console.error('[信箱] ' + name + ' 失败，退回直连：' + String((e && e.message) || e).slice(0, 90));
+        }
+      }
+      return ag.ask(p, { timeoutMs: TASK_TIMEOUT_MS });
+    },
     TASK_TIMEOUT_MS + 20000, name
   ), {
     onWait: (n) => console.error(`[队列] ${name} 的 ${n} 路都占满，排队等待…`),
@@ -849,14 +875,107 @@ try {
   // 与 swarm 的区别：swarm 跑「已经拆好的独立任务」；sub 先从一句目标拆出子任务，
   // 每个子任务带角色提示词独立执行，回来只给摘要（全文留在 runs/<id>/）。
   // 拆解失败就退化成单任务，绝不因为「拆得不漂亮」整单失败。
-  if (cmd === 'sub') {
-    const goal = who0 && who0 !== 'sub' ? who0 : (args.shift() || '');
-    if (!goal || String(goal).trim().length < 4) {
-      console.error('用法: sub "<目标>" [--n 3] [--agent lead] [--slots trae=1,codebuddy=6] [--deep] [--resume]');
+  // ---- do：一句话入口。用户不用记五档，这里替它判断 ----
+  // 为什么要有它：ask / swarm / batch / duo / sub 五档，每档还带 --land / --verify / --slots，
+  // 让用户记这些等于把工具的复杂度转嫁给用户。do 用纯规则判断（不调 AI、不多花一分钱），
+  // 并且把判断依据打印出来——判错了也能一眼看懂为什么错，而不是被黑箱吞掉。
+  //
+  // 只有两个语义对用户是真实的：**一件** 和 **一堆**。
+  // 所以 do 只映射两档：ask（一件）与 sub（一堆，内部自带拆解 + 并行）。
+  // swarm 需要预先写好的任务文件，不适合「一句话」场景，故不映射。
+  if (cmd === 'do') {
+    const dwords = [];
+    let dAgent = '';
+    let dN = '';
+    let dDry = false;
+    {
+      const av = process.argv.slice(3).filter((x) => x !== undefined);
+      for (let i = 0; i < av.length; i++) {
+        const a = av[i];
+        if (a === '--n') dN = av[++i] || '';
+        else if (a === '--agent') dAgent = String(av[++i] || '').toLowerCase();
+        else if (a === '--dry') dDry = true;
+        else if (a === '--no-land' || a === '--no-verify' || a === '--fast') { /* 透传给下游 */ dwords.push(a); }
+        else if (a.startsWith('--')) { console.error('未知参数 ' + a); process.exit(2); }
+        else dwords.push(a);
+      }
+    }
+    const goalRaw = dwords.filter((x) => !x.startsWith('--')).join(' ').trim();
+    if (!goalRaw || goalRaw.length < 4) {
+      console.error('用法: do "<一句话目标>" [--n 4] [--agent codebuddy] [--dry]');
       process.exit(2);
     }
-    const wantN = Math.max(1, Math.min(8, Number(argOfText('--n', '3')) || 3));
-    const leadAgent = argOfText('--agent', process.env.ORCH_SUB_LEAD || 'codebuddy');
+    const cntMatch = goalRaw.match(/(\d+)\s*(?:个|条|篇|份|种|项|件)/);
+    const manyWord = /(和|以及|、|分别|各自|还有)/;
+    const systemLike = /(系统|一整套|完整|框架|重构整个|全部|批量)/;
+    let tier;
+    let why;
+    if (cntMatch && Number(cntMatch[1]) >= 2) {
+      tier = 'sub';
+      why = '目标里写了 ' + cntMatch[1] + ' 件，拆开并行';
+    } else if (systemLike.test(goalRaw) || (goalRaw.length > 60 && manyWord.test(goalRaw))) {
+      tier = 'sub';
+      why = '像多产物/系统性目标，先拆再并行';
+    } else {
+      tier = 'ask';
+      why = '单点且明确，一件派出去最快';
+    }
+    // 复用 pickAgent 的判断：它比 isCodeTask 细一档（会看是不是评审型、要不要 workbuddy），
+    // 但探活是异步的，这里只取纯规则部分，探活交给下游 dispatch。
+    const pk = pickAgent(goalRaw);
+    const agentPick = dAgent || pk.name;
+    const nPick = String(Math.max(2, Math.min(8, Number(dN) || (cntMatch ? Number(cntMatch[1]) : 3))));
+    const passthru = dwords.filter((x) => x.startsWith('--'));
+    const childArgs = tier === 'ask'
+      ? ['ask', agentPick, goalRaw]
+      : ['sub', goalRaw, '--n', nPick];
+    for (const p of passthru) childArgs.push(p);
+    console.error('[do] 目标：' + goalRaw.replace(/\s+/g, ' ').slice(0, 90));
+    console.error('[do] 判断：' + tier + '（' + why + '）· 通道 ' + agentPick + '（' + pk.why + '）' + (tier === 'sub' ? ' · 并行 ' + nPick : ''));
+    if (dDry) {
+      console.log('');
+      console.log('将执行: ' + [process.execPath, path.join(ROOT, 'orchestra.mjs'), ...childArgs].join(' '));
+      process.exit(0);
+    }
+    const r0 = spawnSync(process.execPath, [path.join(ROOT, 'orchestra.mjs'), ...childArgs], { stdio: 'inherit' });
+    const st = r0.status;
+    if (st !== 0) {
+      const hint = st === 2 ? '参数写错了，看上面用法'
+        : st === 3 ? '派活阶段就挂了：先跑 health 看哪条通道活着'
+        : st === 4 ? '有任务没做完，看上面 ✗ 那几个'
+        : st === null ? '子进程被信号打断（超时或被 kill）'
+        : '退出码 ' + st;
+      console.error('\n[do] ✗ 失败：' + hint);
+    }
+    process.exit(st === null ? 1 : st);
+  }
+
+  if (cmd === 'sub') {
+    // 参数自解析（不复用 swarm 分支的 flags，那些变量只在它自己作用域里）
+    const sflags = { n: '3', agent: process.env.ORCH_SUB_LEAD || 'codebuddy', slots: '', chars: '160', resume: false, mode: 'auto' };
+    const swords = [];
+    {
+      const av = process.argv.slice(3).filter((x) => x !== undefined);
+      for (let i = 0; i < av.length; i++) {
+        const a = av[i];
+        if (a === '--n') sflags.n = av[++i] || '3';
+        else if (a === '--agent') sflags.agent = String(av[++i] || 'codebuddy').toLowerCase();
+        else if (a === '--slots') sflags.slots = av[++i] || '';
+        else if (a === '--chars') sflags.chars = av[++i] || '160';
+        else if (a === '--mode') sflags.mode = String(av[++i] || 'auto').toLowerCase();
+        else if (a === '--resume') sflags.resume = true;
+        else if (a === '--deep') { /* 预留：交给 runSwarm 的 deep */ }
+        else if (a.startsWith('--')) { console.error('未知参数 ' + a); process.exit(2); }
+        else swords.push(a);
+      }
+    }
+    const goal = swords.join(' ').trim();
+    if (!goal || goal.length < 4) {
+      console.error('用法: sub "<目标>" [--n 3] [--agent codebuddy] [--slots trae=1,codebuddy=6] [--chars 160] [--resume]');
+      process.exit(2);
+    }
+    const wantN = Math.max(1, Math.min(8, Number(sflags.n) || 3));
+    const leadAgent = sflags.agent;
     const runId = 'sub' + Date.now();
     const t0 = Date.now();
     console.error('[sub] 目标：' + String(goal).replace(/\s+/g, ' ').slice(0, 80));
@@ -881,7 +1000,7 @@ try {
     const dir = briefDir(runId);
     const briefPath = writeBrief(dir, goal, subs);
 
-    const slots = parseSlots(argOfText('--slots', ''));
+    const slots = parseSlots(sflags.slots);
     const tasks = subs.map((x) => ({ id: x.id, text: buildBrief(x) }));
     const onProgress = (ev) => {
       const t = new Date().toISOString().slice(11, 19);
@@ -893,7 +1012,7 @@ try {
     let out = null;
     try {
       out = await runSwarm(tasks, {
-        mode: flags.mode, slots, resume: flags.resume, taskSource: 'sub:' + runId,
+        mode: sflags.mode, slots, resume: sflags.resume, taskSource: 'sub:' + runId,
         dispatchFn: (text, extra) => dispatch('sub', text, extra),
         onProgress,
       });
@@ -902,7 +1021,9 @@ try {
       process.exit(3);
     }
     const wall = ((Date.now() - t0) / 1000).toFixed(1);
-    const d = digest(out.results, Number(argOfText('--chars', '160')) || 160);
+    const byId = new Map(tasks.map((t) => [String(t.id), t.text]));
+    const enriched = (out.results || []).map((r) => ({ ...r, shownPrompt: byId.get(String(r.id)) || "" }));
+    const d = digest(enriched, Number(sflags.chars) || 160);
     console.log(renderDigest(d));
     console.error('[sub] 墙钟 ' + wall + 's   产物：' + (briefPath ? path.dirname(briefPath) : dir) + '   报告：' + (out.dir || ''));
     process.exit(d.ok === d.total ? 0 : 4);
@@ -913,7 +1034,7 @@ try {
   // swarm 把这些开销摊到 N 件事上，并且 trae(1 路快) 与 codebuddy(6 路准) 两条流水线同时跑。
   if (cmd === 'swarm') {
     const argv = [who, ...rest].filter(x => x !== undefined);
-    const flags = { mode: 'auto', slotsSpec: '', out: '', resume: false, switchOnFail: true, land: false, verify: false, maxFix: 0, force: false, deep: false };
+    const flags = { mode: 'auto', slotsSpec: '', out: '', resume: false, switchOnFail: true, land: false, verify: false, maxFix: 0, force: false, deep: false, fast: false };
     const words = [];
     for (let i = 0; i < argv.length; i++) {
       const a = argv[i];
@@ -926,6 +1047,7 @@ try {
       else if (a === '--verify') flags.verify = true;
       else if (a === '--force') flags.force = true;
       else if (a === '--deep') flags.deep = true;
+      else if (a === '--fast') flags.fast = true; // 只要一段人看的文字、不要产物：退回 DOM（省文件开销）
       else if (a === '--max-fix') flags.maxFix = Math.max(0, Number(argv[++i] || 0));
       else if (a.startsWith('--')) { console.error('未知参数 ' + a); process.exit(2); }
       else words.push(a);
@@ -969,6 +1091,7 @@ try {
         mode: flags.mode, slots, resume: flags.resume, taskSource: src,
         switchOnFail: flags.switchOnFail,
         land: flags.land, verify: flags.verify, maxFix: flags.maxFix, force: flags.force, deep: flags.deep,
+        fast: flags.fast,
         dispatchFn: (text, extra) => dispatch('swarm', text, extra),
         onProgress,
       });
