@@ -158,7 +158,7 @@ say('[2/6] 交给 ' + agent + ' 出方案');
 // 超时放到 660s（一次生成一整个测试文件在 240s 里做不完）。
 const asked = run(['orchestra.mjs', 'ask', agent, buildPrompt(task)], {
   timeout: 660000,
-  env: { CODEBUDDY_TOOLS: 'Read', CODEBUDDY_MAX_TURNS: '8' },
+  env: { CODEBUDDY_TOOLS: 'Read', CODEBUDDY_MAX_TURNS: '8', ORCH_TIMEOUT_MS: '660000' },
 });
 const answer = asked.stdout || asked.out;
 if (!answer.trim()) { say('  没拿到回答'); process.exit(1); }
