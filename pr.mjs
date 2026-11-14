@@ -185,7 +185,9 @@ function findOpen(s) {
  * 但放行一切脏文件又危险 —— 会把没走提案的代码混进合并。所以只放行元数据，
  * 并且只提交这几个路径。
  */
-const META_TOLERANT = ['memory/STATE.md', 'memory/log.jsonl', 'memory/budget.json', 'memory/PR_LOG.md', 'memory/.prs.json'];
+const META_TOLERANT = ['memory/STATE.md', 'memory/log.jsonl', 'memory/budget.json', 'memory/PR_LOG.md', 'memory/.prs.json', 'memory/SELF.md'];
+// memory/SELF.md：self.mjs 每次自改都追加记录（自举台账），与 STATE.md 同类属运行时产物。
+// 2026-11-15 加进来：不加会造成「自举跑完 → approve 被工作区闸门拦死」的死循环。
 
 function settleWorkspace() {
   const dirty = changedFiles();
