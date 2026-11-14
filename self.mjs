@@ -147,7 +147,12 @@ if (started.code === 0) {
 }
 
 say('[2/6] 交给 ' + agent + ' 出方案');
-const asked = run(['orchestra.mjs', 'ask', agent, buildPrompt(task)], { timeout: 300000 });
+// 关键：纯文本任务要把工具关掉（CODEBUDDY_TOOLS=''），否则它试图 Write 文件、被 max-turns 掐断，
+// 得到的是 "Max turns (1) exceeded" 而不是文件内容（2026-11-14 首次自举踩到）。
+const asked = run(['orchestra.mjs', 'ask', agent, buildPrompt(task)], {
+  timeout: 300000,
+  env: { CODEBUDDY_TOOLS: '', CODEBUDDY_MAX_TURNS: '4' },
+});
 const answer = asked.stdout || asked.out;
 if (!answer.trim()) { say('  没拿到回答'); process.exit(1); }
 
