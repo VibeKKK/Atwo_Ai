@@ -47,9 +47,9 @@
 4. 若 CodeBuddy 登录态过期：起 node bin/codebuddy --serve --port 63910 --auth none 后浏览器点「国内站点登录」
 
 ## 最近一次派活
-- 时间：2026-11-14 22:15
+- 时间：2026-11-14 22:49
 - 指派给：codebuddy
-- 任务：你在改一个 Node.js 项目（零依赖，ESM）。目录：D:\ai project\ai team work 任务：`ensureTrae` 加 allowRestart 硬性要求： 1. 只输出需要改动的**完整文件**，每个文件用一个
-- 耗时：59.1s
+- 任务：你在改一个 Node.js 项目（零依赖，ESM）。目录：D:\ai project\ai team work 任务：三种竞态改 `aria-busy` 判据 硬性要求： 1. 只输出需要改动的**完整文件**，每个文件用一个 ``` 围栏
+- 耗时：30.0s
 - 结果：失败 — codebuddy 退出码 143：
 - 产出长度：0 字符

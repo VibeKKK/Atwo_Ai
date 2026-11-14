@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { extractFiles, pickTodoFrom } from './lib/selfparse.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const NODE = process.execPath;
@@ -34,6 +35,7 @@ const TESTS = [
   ['batch_offline', ['test/batch_offline.mjs']],
   ['ui_smoke', ['test/ui_smoke.mjs']],
   ['store_history', ['test/store_history.mjs']],
+  ['self_parse', ['test/self_parse.mjs']],
   ['eval_selftest', ['eval/run.mjs', '--selftest']],
 ];
 
@@ -68,45 +70,7 @@ function buildPrompt(task) {
 }
 
 /** 从回答里抽 [{ file, content }] */
-function extractFiles(text) {
-  const ALLOWED = /\.(mjs|js|json|md|txt)$/i;
-  const out = [];
-  const seen = new Set();
-  const push = (file, content) => {
-    const f = String(file || '').trim().replace(/^["'`]|["'`]$/g, '').replace(/^\.\//, '').replace(/\\/g, '/');
-    if (!f || !ALLOWED.test(f) || seen.has(f)) return;
-    seen.add(f);
-    out.push({ file: f, content: String(content || '').replace(/\r\n/g, '\n') });
-  };
-  const body = String(text || '');
 
-  // 第一优先：围栏首行写 `FILE: path`（或 `// FILE: path` / `# FILE: path`）
-  const fence = /```[a-zA-Z]*\r?\n([\s\S]*?)```/g;
-  let m;
-  const leftovers = [];
-  while ((m = fence.exec(body)) !== null) {
-    const inner = m[1];
-    const lines = inner.split(/\r?\n/);
-    const first = (lines[0] || '').trim();
-    const hit = /^(?:\/\/|#|\/\*)?\s*FILE:\s*(.+?)\s*(?:\*\/)?$/i.exec(first);
-    if (hit) { push(hit[1], lines.slice(1).join('\n')); continue; }
-    // 第二优先：首行是「看着像路径」的注释，例如 `// test/store_history.mjs`
-    const cmt = /^(?:\/\/|#|\/\*|<!--)\s*([A-Za-z0-9_./\\-]+\.(?:mjs|js|json|md|txt))\b/i.exec(first);
-    if (cmt) { push(cmt[1], lines.slice(1).join('\n')); continue; }
-    leftovers.push({ inner, start: m.index, lines });
-  }
-
-  // 第三优先：围栏前面最近一条「像路径」的标题行（`### test/x.mjs` / `**test/x.mjs**` / 裸路径行）
-  for (const lf of leftovers) {
-    const before = body.slice(Math.max(0, lf.start - 400), lf.start);
-    const cands = [...before.matchAll(/([A-Za-z0-9_./\\-]+\.(?:mjs|js|json|md|txt))/gi)].map(x => x[1]);
-    if (cands.length) { push(cands[cands.length - 1], lf.inner); continue; }
-    // 第四优先：整段回答里只有这一个围栏 → 用文件名线索兜底
-    const name = /(?:^|\n)\s*(?:创建|新增|改成|edit|add)\s*([A-Za-z0-9_./\\-]+\.(?:mjs|js|json|md|txt))/i.exec(body);
-    if (name) push(name[1], lf.inner);
-  }
-  return out;
-}
 
 function safeTarget(rel) {
   const abs = path.resolve(ROOT, rel);
@@ -165,16 +129,7 @@ const agent = ai >= 0 ? argv[ai + 1] : 'codebuddy';
 function pickTodo(nth = 1) {
   const f = path.join(ROOT, 'collab', 'SHARED.md');
   if (!fs.existsSync(f)) return null;
-  const lines = fs.readFileSync(f, 'utf8').split(/\r?\n/);
-  const start = lines.findIndex(l => /^##\s*\d+\s*待办/.test(l));
-  const scope = start >= 0 ? lines.slice(start + 1) : lines;
-  const items = [];
-  for (const l of scope) {
-    if (/^##\s/.test(l)) break;
-    const m = /^\s*-\s*\[\s*\]\s*(.+?)\s*$/.exec(l);
-    if (m) items.push(m[1].replace(/[（(][^）)]*[）)]\s*$/, '').trim());
-  }
-  return items[nth - 1] || null;
+  return pickTodoFrom(fs.readFileSync(f, 'utf8'), nth);
 }
 const pi = argv.indexOf('--pick');
 let task = '';
