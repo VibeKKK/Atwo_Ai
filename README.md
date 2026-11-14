@@ -64,6 +64,49 @@ orch peer me "正在改存储层"
 orch peer post "存储修复已提交" --topic 存储
 ```
 
+## atw —— 把这套装成 MCP 工具
+
+除了 CLI，Orchestra 还能以 **MCP server** 的形式挂在任意支持 MCP 的客户端里（DSH / Claude Desktop / 自研 agent 都行）。
+服务端 `tools/atw-mcp.mjs` 零依赖，只用 newline-delimited JSON-RPC（不是 LSP 的 Content-Length 帧）。
+
+```jsonc
+// 客户端注册示例（DSH: ~/.dsh/profiles/desktop/cordis.yml）
+{
+  "id": "mcp-atw",
+  "name": "@deepseek-ai/dsh-mcp-client",
+  "config": {
+    "serverName": "atw",
+    "transport": "stdio",
+    "command": "<node 可执行文件>",
+    "args": ["<仓库>/tools/atw-mcp.mjs"],
+    "env": { "ELECTRON_RUN_AS_NODE": "1" },
+    "failOnStartupError": false   // 建议 false，但记得自己去验证工具真的挂上了
+  }
+}
+```
+
+| 工具 | 用途 |
+|---|---|
+| `atw_do` | 目标级派活：自动拆任务 → 派给各通道 → 并行 → 带落盘和验收回来 |
+| `atw_ask` | 派一个已拆好的明确任务给指定通道，拿回结果文本 |
+| `atw_swarm` | N 个独立任务跨通道并行，失败自动换路重试 |
+| `atw_health` | 四条通道是否活着、当前额度、有没有卡住的锁 |
+| `atw_stats` | 台账：调用次数 / 成功率 / 平均耗时 / 平均字符数 / 累计 token |
+| `atw_db` | **直接读写两套共享库**（`list/get/put/del/history/tables/stat`，不派活、不花额度、毫秒级） |
+| `atw_peer` | **并肩看板与投信**（`board/post/read`），走 `pair.mjs` 的文件信箱 |
+
+`atw_db` / `atw_peer` 与 CLI 完全同一份数据：从 MCP 里 `put` 的一行，`orch db list` 立刻看得见，反之亦然。
+
+### 派活自动记账
+`atw_ask` / `atw_do` / `atw_swarm` 每次调用都会往**记忆库**的 `atw` 表写一行：
+`{tool, argv, code, ok, ms, head}`，`by = "atw-mcp"`。
+于是「今天派了多少活、成功几成、平均多慢」不再靠翻日志，`atw_stats` / `orch db list atw` 直接给。
+
+### 起不来怎么查（按顺序）
+1. `echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | node tools/atw-mcp.mjs` —— 有 `serverInfo` 说明服务端没问题
+2. 客户端里看不到 `atw_*` → 是客户端侧加载失败，`failOnStartupError: false` 会把它静默吞掉，**别以为配好了**
+3. 宿主是 Electron（如 DSH）时必须带 `env.ELECTRON_RUN_AS_NODE=1`，否则 node 脚本会被当成 GUI 入口
+
 ## swarm —— 吞吐最高的一档
 
 ```bash

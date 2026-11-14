@@ -29,7 +29,7 @@ import { checkSyntax } from './lib/syntax.mjs';
 import { get as cacheGet, put as cachePut, stats as cacheStats, clear as cacheClear } from './lib/cache.mjs';
 import { preflightTrae } from './lib/preflight.mjs';
 import { check as budgetCheck, record as budgetRecord, report as budgetReport, usedToday } from './lib/budget.mjs';
-import { start as prStart, finish as prFinish } from './pr.mjs';
+import { start as prStart, finish as prFinish, reject as prReject } from './pr.mjs';
 import { loadTasks, buildBatchPrompt, splitResults } from './lib/batch.mjs';
 import { runSwarm, runSwarmWaves, loadSwarmTasks, parseSlots, renderReport, fmtMs, routeTask, listRuns, DEFAULT_SLOTS } from './lib/swarm.mjs';
 import { DECOMPOSE_CONTRACT, parseSubtasks, singleTask, buildBrief, briefDir, writeBrief, digest, renderDigest } from './lib/subagent.mjs';
@@ -422,12 +422,30 @@ async function dispatch(kindLabel, rawPrompt, extra = {}) {
     onWait: (n) => console.error(`[队列] ${name} 的 ${n} 路都占满，排队等待…`),
   });
 
+  const t0Dispatch = Date.now();
   try {
     r = await runOnce(prompt);
   } catch (e) {
     err = e;
     r = e.partial || null;
+    // 超时不等于失败。实测 workbuddy 已经把产物写进磁盘、只是没及时回话，
+    // 等满 260s 超时后却被记成失败 —— 账是错的，而且会触发不必要的重派。
+    // 判据回到产物本身：任务里点名了绝对路径，而那个文件在本次派活之后被改写过，就算完成。
+    // （嘴上的回答不算证据，磁盘上的字节算。）
+    const pick = (String(prompt).match(/[A-Za-z]:[\\/][^\s"'<>|*?\r\n]+?\.\w{1,5}/g) || [])
+      .map((s) => s.replace(/[，。；、）)\]]+$/, ''))
+      .filter((v, i, a) => a.indexOf(v) === i)
+      .map((p) => { try { const st = fs.statSync(p); return st.isFile() && st.mtimeMs >= t0Dispatch - 2000 ? { p, size: st.size } : null; } catch { return null; } })
+      .filter(Boolean)
+      .sort((a, b) => b.size - a.size);
+    if (pick.length) {
+      const best = pick[0];
+      console.error('[抢救] ' + name + ' 超时，但产物已在磁盘上：' + best.p + '（' + best.size + ' 字节）→ 改判成功');
+      r = { ok: true, addedText: '（产物由' + name + '直接写盘，未回话）', salvaged: best.p, usage: { in: 0, out: 0 } };
+      err = null;
+    }
   }
+
 
   if (wantContract && r && r.ok) {
     contract = parseContract(r.addedText || '');
@@ -509,6 +527,19 @@ async function dispatch(kindLabel, rawPrompt, extra = {}) {
     } catch (e) {
       entry.prStatus = 'finish-failed';
       console.error(`[PR] 收口失败：${e.message}`);
+      // 2026-11-15 修（rank2 提出的 7 个「永远 open 且无 diff」的提案根因）：
+      // finish() 只有在「还在提案分支上」时才能成功；派活失败/工作区被别的通道改动后，
+      // finish 会抛错，提案就永久卡在 open 且没有 diff，谁也不会再碰它。
+      // 这里补一个兜底：收不了口就直接 reject，让状态机一定往前走。
+      try {
+        const rej = prReject(pr.id, 'Auto: 派活失败或收口失败（' + String(e.message || e).slice(0, 80) + '）');
+        entry.prStatus = 'rejected(auto)';
+        entry.pr = rej.id;
+        console.error(`[PR] 已自动 reject ${rej.id}，避免卡在 open`);
+      } catch (e2) {
+        entry.prStatus = 'abandoned';
+        console.error(`[PR] reject 也失败（${e2.message}），该提案需人工清理：${pr.id}`);
+      }
     }
   }
 
@@ -549,7 +580,9 @@ try {
     }
     // agent 名可以省略：省略时按任务特征自动选路。
     // 短问答走 workbuddy（~22s、不随回合衰减），要产出代码走 codebuddy（慢但准）。
-    const KNOWN = ['trae', 'codebuddy', 'workbuddy'];
+    // doubao 之前漏在这个表里 → `ask doubao "…"` 会被当成 prompt 开头，重新走自动选路，
+    // 实测被改判给 workbuddy 并超时 260s。已知通道必须全列，否则显式指定等于没指定。
+    const KNOWN = ['trae', 'codebuddy', 'workbuddy', 'doubao'];
     // 2026-11-14 修（污染评测的真 bug）：ask trae "…" 里 agent 名已被外层解析成 who0/rest，
     // 这里只看 args[0]，把「已指定的 agent」丢掉了，又调 routeTask 重新选路 →
     // eval --agent trae 实际把任务分给 workbuddy/codebuddy，测出的“trae 通过率”是别家的。

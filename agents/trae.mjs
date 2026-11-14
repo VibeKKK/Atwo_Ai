@@ -541,14 +541,24 @@ export async function askTrae(prompt, opts = {}) {
   try {
     if (!await inputSelectorReady(c)) throw new Error('Trae Agent 面板没就绪');
 
-    // 开新对话默认关闭（2026-11-13 回退）：
-    // 实测「点新建任务 → 落地页输入 → 发送」这条路里，Trae 把消息接下去但
-    // 会话区（.ai-chat / 虚拟列表）读不到任何文本，判据必空转。
-    // 目前可靠的仍是「在已有会话里继续问 + 用最后一条回合文本判完成」。
-    //   ORCH_TRAE_NEW_CHAT=1 手动开启（适合人工盯着跑）
-    const useNewChat = process.env.ORCH_TRAE_NEW_CHAT === '1';
+    // 开新对话：默认「按需触发」（2026-11-15 A3 改）。
+    // 背景：Trae 的会话区是虚拟列表，DOM 只保留最近约 5–13 条回合；到上限后
+    // turns 永久封顶 → 「回合数增长」判据必然假超时，只能开新会话续写。
+    // 策略：
+    //   · 回合数 < ORCH_TRAE_MAX_TURNS（默认 10）→ 什么都不做，走老路（已长期验证）
+    //   · 回合数 >= 阈值 → 自动开新会话，再发（不然这一问必等 45 秒 ESTALE）
+    //   · ORCH_TRAE_NEW_CHAT=1 强制每次新会话；ORCH_TRAE_NEW_CHAT=0 完全禁用
+    const newChatEnv = process.env.ORCH_TRAE_NEW_CHAT;
+    const maxTurns = Number(process.env.ORCH_TRAE_MAX_TURNS || 10) || 10;
+    let turnsBefore = 0;
+    try {
+      const pre = await readAnswers(c);
+      turnsBefore = (pre && pre.turns) || 0;
+    } catch { /* 读不到就当 0，走老路 */ }
+    const useNewChat = newChatEnv === '1' || (newChatEnv !== '0' && turnsBefore >= maxTurns);
     if (useNewChat) {
       try {
+        console.error(`[会话] 已有 ${turnsBefore} 条回合（阈值 ${maxTurns}）→ 开新会话续写`);
         const nc = await clickNewTask({ port: opts.port ?? PORT });
         if (!nc.ok) console.error('[提示] 开新对话失败：' + nc.reason);
         await sleep(500);
@@ -709,6 +719,14 @@ export async function askTrae(prompt, opts = {}) {
         const ans2 = await readAnswers(c);
         const len2 = (ans2.text || '').length;
         if (len2 > String(prompt).length + 5) {
+          // 2026-11-15 新增（A2）：Trae 流式渲染会短暂回 idle，若此时文本停在
+          // `encoding='` 这种半截处就被判收工 → 下游 py_compile 报 unterminated string。
+          // 宁可多等一轮，也不收半截。
+          if (looksTruncated(ans2.text)) {
+            if (DEBUG) console.error('[finish] 看起来是半截（引号/括号未闭合），继续等');
+            await sleep(600);
+            continue;
+          }
           if (DEBUG) console.error(`[finish] 结构信号 idle 且文本 ${len2} 字符 → 收工`);
           capturedText = ans2.text;
           finished = true;
@@ -749,9 +767,17 @@ export async function askTrae(prompt, opts = {}) {
           lastText = fp;
           stableSince = Date.now();
         } else if (Date.now() - stableSince >= settleMs) {
+          // 2026-11-15 新增（A2）：稳定 ≠ 写完。半截文本也会「稳定」，
+          // 所以收工前再过一道 looksTruncated，命中就把稳定计时器重置、继续等。
+          const cand = (ans && ans.text) ? ans.text : (ptText || '');
+          if (looksTruncated(cand)) {
+            if (DEBUG) console.error('[finish] 文本稳定但看起来是半截，重置计时继续等');
+            stableSince = Date.now();
+            continue;
+          }
           finished = true;
           // 同一条道理：收工瞬间把文本留下，别指望循环结束后再读（虚拟化会让 turns 掉回去）
-          capturedText = (ans && ans.text) ? ans.text : (ptText || '');
+          capturedText = cand;
           break;
         }
       } else {

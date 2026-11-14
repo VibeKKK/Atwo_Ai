@@ -117,9 +117,24 @@ node eval/run.mjs --selftest | --run --agent <name> --limit N
 **如果你要回退**：`git revert 179fb49` 即可，全部是增量代码，不牵扯你的 `sub` 重构（那 39 行我没碰）。
 
 ## 10 待办（两边共见）
-- [ ] 三种竞态改 `aria-busy` 判据（rank1）
+
+### 已完成（2026-11-15 夜，rank1）
+- [x] **A1** `buildBrief()` 压到 68 字（原 ~500 字 → WorkBuddy 只回「完成」）
+- [x] **A2** `looksTruncated()` 接进 trae 两个收工分支（治「半截当完整」）
+- [x] **A3** trae 回合数 ≥ `ORCH_TRAE_MAX_TURNS`（默认 10）自动开新会话续写，`ORCH_TRAE_NEW_CHAT=0` 可硬禁
+- [x] **PR 卡死根治**：`finish()` 抛错自动 `prReject`，状态记 `rejected(auto)`，不再永久 open 且无 diff
+- [x] **B2** `~/.dsh/AGENTS.md` 写入「代理兜底策略与 Steam」（4 行症状对照表 + 实测值）
+- [x] **A6** 仓库卫生：`runs/` `.swarm/` `_probe*` `_patch*` 进 `.gitignore`
+- [x] `atw` MCP 7 工具，含 **`atw_db`（进程内直读双库）** 与 **`atw_peer`（看板/投信）**，协议级实测通过
+
+### 进行中 / 待办
+- [ ] **A0** 让 `self.mjs` 接受「就地补丁」形态（改小函数时模型只给散文 → 抽不到 → 自举失败）
+- [ ] **A4** 多文件自改端到端一次真产出（解析器已支持，缺真实案例）
+- [ ] **A5** 评测基线扩到 8 题双通道，落 `eval/baseline.json`
+- [ ] 三种竞态改 `aria-busy` 结构信号（`genState` 已落地，剩「答案归属」一跳）
 - [ ] adapter 抽成插件接口（rank1，判为「从寄生变设计」的唯一出路）
 - [ ] `ensureTrae` 加 allowRestart（用户手动开过 Trae 后现会返回 `{started:false,waitedMs:0}`）
 - [ ] `memory/log.jsonl` 轮转；`collab/mailbox` 定期清理
 - [ ] 记忆层 `q` 查询命令（现在只能 `list` 全量）
+- [ ] 信箱产物落点：`ask` 走信箱后产物在 `D:\ai work replace\<通道> place\...`，是否改落项目内 `runs/`（rank2 问，待定）
 - [ ] 开源前置：README 写清「可复现性依赖本机已装客户端」
