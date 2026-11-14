@@ -1,0 +1,217 @@
+// self.mjs —— 让 Orchestra 用自己养的 agent 改自己的代码（自举 / 自我改进）
+//
+// 流程（每一步都可停下、都可回滚）：
+//   1) 开提案分支（pr.mjs start）
+//   2) 把任务描述交给执行层 agent（默认 codebuddy，要机器判据的活用它）
+//   3) 从回答里抽出「FILE: 路径」标记的完整文件
+//   4) 只写项目内的、非 protected 的文件；其余一律拒绝
+//   5) 跑全部回归（selftest / lockpool / batch_offline / ui_smoke / eval --selftest）
+//   6) 全绿 → pr.mjs finish（提案成型，等人或 rank1 审阅后 approve）；有红 → 还原并 reject
+//
+// 用法：
+//   node self.mjs "任务描述"                 # 干跑：只生成方案、打印将改的文件，不动盘
+//   node self.mjs "任务描述" --apply         # 真写盘 + 跑测 + 开提案
+//   node self.mjs "任务描述" --agent trae --apply
+//   node self.mjs --list                     # 看历史自改记录
+import fs from 'node:fs';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = path.dirname(fileURLToPath(import.meta.url));
+const NODE = process.execPath;
+const SELF_LOG = path.join(ROOT, 'memory', 'SELF.md');
+
+// 不允许自改的文件：改了等于绕过审阅门或破坏可回滚性
+const FORBIDDEN = [
+  'pr.mjs', 'self.mjs', 'lib/vcs.mjs', 'lib/lock.mjs',
+  'collab/authority.json', 'collab/SHARED.md', '.git/',
+];
+
+const TESTS = [
+  ['selftest', ['test/selftest.mjs']],
+  ['lockpool', ['test/lockpool.mjs']],
+  ['batch_offline', ['test/batch_offline.mjs']],
+  ['ui_smoke', ['test/ui_smoke.mjs']],
+  ['eval_selftest', ['eval/run.mjs', '--selftest']],
+];
+
+function run(args, opts = {}) {
+  const r = spawnSync(NODE, args, {
+    cwd: ROOT, encoding: 'utf8', windowsHide: true,
+    timeout: opts.timeout ?? 240000,
+    env: { ...process.env, ...(opts.env || {}) },
+  });
+  return { code: r.status, out: (r.stdout || '') + (r.stderr || ''), stdout: r.stdout || '' };
+}
+
+function say(s) { process.stdout.write(s + '\n'); }
+
+function buildPrompt(task) {
+  return [
+    '你在改一个 Node.js 项目（零依赖，ESM）。目录：' + ROOT,
+    '',
+    '任务：' + task,
+    '',
+    '硬性要求：',
+    '1. 只输出需要改动的**完整文件**，每个文件用一个 ``` 围栏包起来；',
+    '2. 围栏的第一行必须是 `FILE: 相对路径`（例如 FILE: lib/syntax.mjs），不要写解释；',
+    '3. 不要用第三方依赖，不要改 package.json 的 name/bin；',
+    '4. 保持原有导出与函数签名兼容，除非任务要求改；',
+    '5. 代码里不要写 TODO，要能直接跑。',
+  ].join('\n');
+}
+
+/** 从回答里抽 [{ file, content }] */
+function extractFiles(text) {
+  const out = [];
+  const fence = /```[a-zA-Z]*\r?\n([\s\S]*?)```/g;
+  let m;
+  while ((m = fence.exec(String(text || ''))) !== null) {
+    const body = m[1];
+    const first = body.split(/\r?\n/)[0].trim();
+    const hit = /^\/\/\s*FILE:\s*(.+)$/.exec(first) || /^#\s*FILE:\s*(.+)$/.exec(first);
+    if (!hit) continue;
+    const file = hit[1].trim().replace(/^["'`]|["'`]$/g, '');
+    const content = body.split(/\r?\n/).slice(1).join('\n');
+    out.push({ file, content });
+  }
+  return out;
+}
+
+function safeTarget(rel) {
+  const abs = path.resolve(ROOT, rel);
+  if (!abs.startsWith(ROOT + path.sep)) return '拒绝：路径跑出项目目录';
+  for (const f of FORBIDDEN) {
+    if (rel === f || rel.startsWith(f)) return '拒绝：' + f + ' 属于禁改清单';
+  }
+  if (!/\.(mjs|js|json|md)$/.test(rel)) return '拒绝：只允许改 .mjs/.js/.json/.md';
+  return null;
+}
+
+function testsAll() {
+  const rows = [];
+  for (const [name, args] of TESTS) {
+    const t0 = Date.now();
+    const r = run(args, { timeout: 300000 });
+    const ms = Date.now() - t0;
+    const ok = r.code === 0;
+    rows.push({ name, ok, ms, tail: r.out.trim().split('\n').slice(-2).join(' / ').slice(0, 160) });
+    say('  ' + (ok ? 'PASS' : 'FAIL').padEnd(5) + name.padEnd(16) + String(ms).padStart(6) + 'ms  ' + (ok ? '' : r.out.trim().split('\n').slice(-3).join(' | ').slice(0, 200)));
+  }
+  return rows;
+}
+
+function log(entry) {
+  fs.mkdirSync(path.dirname(SELF_LOG), { recursive: true });
+  const block = [
+    '',
+    '## ' + new Date().toISOString().replace('T', ' ').slice(0, 16) + ' · ' + entry.task,
+    '- agent: ' + entry.agent + ' · 结果: ' + entry.verdict,
+    '- 文件: ' + (entry.files.length ? entry.files.join(', ') : '(无)'),
+    '- 测试: ' + entry.tests.map(t => t.name + '=' + (t.ok ? 'ok' : 'FAIL')).join(' '),
+    entry.note ? '- 备注: ' + entry.note : '',
+  ].filter(Boolean).join('\n');
+  fs.appendFileSync(SELF_LOG, block + '\n', 'utf8');
+}
+
+// ---------------- main ----------------
+const argv = process.argv.slice(2);
+if (!argv.length || argv[0] === '-h' || argv[0] === '--help') {
+  say('用法: node self.mjs "任务描述" [--agent codebuddy|trae] [--apply]');
+  say('      node self.mjs --list');
+  process.exit(argv.length ? 0 : 2);
+}
+if (argv[0] === '--list') {
+  if (fs.existsSync(SELF_LOG)) say(fs.readFileSync(SELF_LOG, 'utf8').trim());
+  else say('(还没有自改记录)');
+  process.exit(0);
+}
+
+const apply = argv.includes('--apply');
+const ai = argv.indexOf('--agent');
+const agent = ai >= 0 ? argv[ai + 1] : 'codebuddy';
+const task = argv.filter((a, i) => !a.startsWith('--') && (ai < 0 || i !== ai + 1)).join(' ').trim();
+if (!task) { say('缺少任务描述'); process.exit(2); }
+
+say('[1/6] 提案分支');
+let prId = null;
+const started = run(['pr.mjs', 'start', task.slice(0, 50)]);
+if (started.code === 0) {
+  const hit = /(PR-\d{8}-\d{3})/.exec(started.out);
+  prId = hit ? hit[1] : null;
+  say('  ' + (prId || '已开分支（未解析出提案号）'));
+} else {
+  say('  开分支失败：' + started.out.trim().split('\n').slice(-1)[0]);
+  if (apply) process.exit(1);
+}
+
+say('[2/6] 交给 ' + agent + ' 出方案');
+const asked = run(['orchestra.mjs', 'ask', agent, buildPrompt(task)], { timeout: 300000 });
+const answer = asked.stdout || asked.out;
+if (!answer.trim()) { say('  没拿到回答'); process.exit(1); }
+
+say('[3/6] 抽文件');
+const files = extractFiles(answer);
+if (!files.length) {
+  say('  回答里没有 FILE: 标记的围栏 —— 让 agent 按格式重出，或手工改');
+  say('  回答前 300 字：' + JSON.stringify(answer.slice(0, 300)));
+  if (prId) run(['pr.mjs', 'reject', prId, '没有可应用的文件']);
+  process.exit(1);
+}
+for (const f of files) {
+  const bad = safeTarget(f.file);
+  say('  ' + (bad ? '✗ ' : '✓ ') + f.file + (bad ? '  ' + bad : '  ' + f.content.length + ' 字符'));
+}
+const accepted = files.filter(f => !safeTarget(f.file));
+if (!accepted.length) { say('  全部被拒，退出'); if (prId) run(['pr.mjs', 'reject', prId, '无可应用文件']); process.exit(1); }
+
+if (!apply) {
+  say('');
+  say('干跑结束。加 --apply 才会写盘、跑测、开提案。');
+  for (const f of accepted) say('--- ' + f.file + ' ---\n' + f.content.slice(0, 600) + (f.content.length > 600 ? '\n…(截断)' : ''));
+  process.exit(0);
+}
+
+say('[4/6] 写盘');
+const backups = [];
+for (const f of accepted) {
+  const abs = path.resolve(ROOT, f.file);
+  if (fs.existsSync(abs)) backups.push([abs, fs.readFileSync(abs, 'utf8')]);
+  fs.mkdirSync(path.dirname(abs), { recursive: true });
+  fs.writeFileSync(abs, f.content, 'utf8');
+  say('  写入 ' + f.file);
+}
+
+say('[5/6] 回归');
+const tests = testsAll();
+const green = tests.every(t => t.ok);
+
+say('[6/6] 收尾');
+let verdict;
+if (green) {
+  const fin = run(['pr.mjs', 'finish'], { timeout: 120000 });
+  verdict = fin.code === 0 ? '待审阅（提案成型）' : '测试绿但提案收尾失败';
+  if (fin.code !== 0) say('  ' + fin.out.trim().split('\n').slice(-2).join(' | '));
+  say('  ' + verdict + (prId ? ' · ' + prId : ''));
+  say('  下一步（人来按）：node pr.mjs pending → node pr.mjs review ' + (prId || '<id>') + ' --by rank1 --note "……" → node pr.mjs approve ' + (prId || '<id>'));
+} else {
+  for (const [abs, text] of backups.reverse()) fs.writeFileSync(abs, text, 'utf8');
+  for (const f of accepted) {
+    const abs = path.resolve(ROOT, f.file);
+    if (!backups.some(b => b[0] === abs)) { try { fs.unlinkSync(abs); } catch { } }
+  }
+  if (prId) run(['pr.mjs', 'reject', prId, '回归未通过，自动回滚']);
+  verdict = '回归未通过 → 已回滚';
+  say('  ' + verdict);
+}
+
+log({
+  task, agent, verdict,
+  files: accepted.map(f => f.file),
+  tests,
+  note: green ? '' : tests.filter(t => !t.ok).map(t => t.name + ': ' + t.tail).join(' ; '),
+});
+say('');
+say('记录已写入 memory/SELF.md');
+process.exit(green ? 0 : 1);

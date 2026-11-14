@@ -60,9 +60,10 @@ function pickAgent(prompt) {
   const code = CODE_HINTS.test(p);
   const prose = PROSE_HINTS.test(p);
   if (code && !prose) return { name: 'codebuddy', why: '偏写代码' };
-  if (prose && !code) return { name: 'trae', why: '偏评审/解释' };
   if (code && prose) return { name: 'codebuddy', why: '代码+评审混合，代码优先（出码可直接用）' };
-  return { name: 'trae', why: '默认走自然语言' };
+  // 自然语言默认走 workbuddy：同为 ~22s，但没有 trae 那种「回合数一多就失灵」的衰减。
+  // trae 仍可显式指定（ask trae），也作为 workbuddy 没开时的回退。
+  return { name: 'workbuddy', why: prose ? '偏评审/解释' : '默认走自然语言' };
 }
 
 /** trae 出代码必须带围栏，否则它渲染成单段落、缩进丢失。这里自动补一句。 */
@@ -74,7 +75,9 @@ function ensureFenceHint(name, prompt) {
   return p + '\n\n（要求：用 markdown 代码块 ``` 输出代码，缩进必须是 4 个空格，不要行号。）';
 }
 
-const [cmd, who, ...rest] = process.argv.slice(2);
+const [cmd, who0, ...rest] = process.argv.slice(2);
+// 第一个词不是已知 agent 名时，把它当成 prompt 的一部分，改走自动选路。
+let who = who0;
 
 // 启动即清理过期临时能力（会话结束/超时的自动消失）
 const STARTUP_GC = (() => { try { return ephGc(); } catch { return 0; } })();   // 启动即清过期
@@ -230,12 +233,25 @@ if (cmd === 'memory') {
 
 const NO_AGENT_CMDS = ['eph','ctx','duo','stats','auto','pick','doctor','probe','budget','health','list','swarm','top'];
 const needsAgent = !NO_AGENT_CMDS.includes(cmd);
+// 第一个词既不是已知 agent 也不是 auto → 它是 prompt 的开头，改走自动选路。
+if (needsAgent && who && who !== 'auto' && !REGISTRY[who]) { rest.unshift(who); who = 'auto'; }
 let agent = REGISTRY[who];
 let effectiveWho = who;
 let autoWhy = '';
 if (needsAgent && who === 'auto') {
   const p = rest.join(' ');
   const pick = pickAgent(p);
+  // workbuddy 是 CDP 系：应用没开这条选路等于空转，探一下再定，探不到退回 trae。
+  if (pick.name === 'workbuddy') {
+    const up = await new Promise((res) => {
+      const s = net.connect(Number(process.env.WB_PORT || 9224), '127.0.0.1');
+      const d = (v) => { s.destroy(); res(v); };
+      s.setTimeout(700, () => d(false));
+      s.on('connect', () => d(true));
+      s.on('error', () => d(false));
+    });
+    if (!up) { pick.name = 'trae'; pick.why = 'workbuddy 未就绪（9224 未监听），退回 trae'; }
+  }
   agent = REGISTRY[pick.name];
   effectiveWho = pick.name;
   autoWhy = pick.why;
@@ -503,9 +519,22 @@ try {
       if (args[i] === '--skill') { skill = args[i + 1]; args.splice(i, 2); i--; }
       if (args[i] === '--dry') { dry = true; args.splice(i, 1); i--; }
     }
+    // agent 名可以省略：省略时按任务特征自动选路。
+    // 短问答走 workbuddy（~22s、不随回合衰减），要产出代码走 codebuddy（慢但准）。
+    const KNOWN = ['trae', 'codebuddy', 'workbuddy'];
+    // 2026-11-14 修（污染评测的真 bug）：ask trae "…" 里 agent 名已被外层解析成 who0/rest，
+    // 这里只看 args[0]，把「已指定的 agent」丢掉了，又调 routeTask 重新选路 →
+    // eval --agent trae 实际把任务分给 workbuddy/codebuddy，测出的“trae 通过率”是别家的。
+    // 现在：外层已确认的 agent 优先，其次看 args[0]，最后才自动选路。
+    let autoAgent = (who0 && KNOWN.includes(String(who0).toLowerCase())) ? String(who0).toLowerCase() : null;
+    if (!autoAgent && args.length && KNOWN.includes(String(args[0]).toLowerCase())) autoAgent = args.shift().toLowerCase();
     const prompt = args.join(' ').trim();
     if (!prompt) { console.error('prompt 不能为空'); process.exit(2); }
-    const r = await dispatch('ask', prompt, (skill || dry) ? { skill, dry } : {});
+    if (!autoAgent) {
+      autoAgent = routeTask(prompt);
+      console.error('[选路] ' + autoAgent + '（' + prompt.length + ' 字符，自动判定）');
+    }
+    const r = await dispatch('ask', prompt, { agent: autoAgent, ...((skill || dry) ? { skill, dry } : {}) });
     if (r.dry) {
       console.log('=== 将要发给 ' + r.agent + ' 的完整 prompt（' + r.prompt.length + ' 字符，未发出）===');
       console.log(r.prompt);
@@ -642,6 +671,21 @@ try {
       s.on('error', () => done(false));
     });
     line(portOk ? '✓' : '·', 'Trae 调试端口', portOk ? `${cfg.traePort} 在监听` : `${cfg.traePort} 没监听（派活时会自动拉起 Trae，属正常）`);
+
+    // WorkBuddy：CDP 系快路（~22s/次），和 trae 同档但失效模式不同 ——
+    // trae 会随回合数衰减，workbuddy 没观察到衰减，代价是必须应用开着。
+    const wbPort = Number(process.env.WB_PORT || 9224);
+    const wbUp = await new Promise((res) => {
+      const s = net.connect(wbPort, '127.0.0.1');
+      const done = (v) => { s.destroy(); res(v); };
+      s.setTimeout(900, () => done(false));
+      s.on('connect', () => done(true));
+      s.on('error', () => done(false));
+    });
+    const wbExeOk = fs.existsSync(wbMeta.exe || '');
+    line(wbUp ? '✓' : '·', 'WorkBuddy 快路', wbUp
+      ? `${wbPort} 在监听 → 可直接派活，~22s/次（双快路并行时吞吐翻倍）`
+      : `${wbPort} 没监听（打开 WorkBuddy 即可用；不开则本批跳过这条路${wbExeOk ? '' : '，exe 也没找到：' + wbMeta.exe}）`);
 
     const cbOk = fs.existsSync(cfg.codebuddyCli);
     line(ok(cbOk), 'codebuddy CLI', cbOk ? cfg.codebuddyCli : `不存在：${cfg.codebuddyCli}（当前来源：${src.codebuddyCli}）`);
@@ -804,7 +848,7 @@ try {
   // swarm 把这些开销摊到 N 件事上，并且 trae(1 路快) 与 codebuddy(6 路准) 两条流水线同时跑。
   if (cmd === 'swarm') {
     const argv = [who, ...rest].filter(x => x !== undefined);
-    const flags = { mode: 'auto', slotsSpec: '', out: '', resume: false, switchOnFail: true };
+    const flags = { mode: 'auto', slotsSpec: '', out: '', resume: false, switchOnFail: true, land: false, verify: false, maxFix: 0, force: false, deep: false };
     const words = [];
     for (let i = 0; i < argv.length; i++) {
       const a = argv[i];
@@ -813,9 +857,16 @@ try {
       else if (a === '--out') flags.out = argv[++i] || '';
       else if (a === '--resume') flags.resume = true;
       else if (a === '--no-switch') flags.switchOnFail = false;
+      else if (a === '--land') flags.land = true;
+      else if (a === '--verify') flags.verify = true;
+      else if (a === '--force') flags.force = true;
+      else if (a === '--deep') flags.deep = true;
+      else if (a === '--max-fix') flags.maxFix = Math.max(0, Number(argv[++i] || 0));
       else if (a.startsWith('--')) { console.error('未知参数 ' + a); process.exit(2); }
       else words.push(a);
     }
+    // --land 隐含 --verify：写进磁盘的东西必须过验收，否则等于把残答固化成文件。
+    if (flags.land) flags.verify = true;
     const src = words.join(' ').trim();
     if (!src) { console.error('用法: swarm <tasks.md | "甲|||乙"> [--agent auto] [--slots trae=1,codebuddy=6] [--out r.md] [--resume]'); process.exit(2); }
     const tasks = loadSwarmTasks(src);
@@ -832,7 +883,19 @@ try {
       if (ev.type === 'start') console.error('[' + t + '] ▶ #' + ev.id + ' ' + ev.agent + ' 路' + ev.slot + '  ' + String(ev.text).replace(/\s+/g, ' ').slice(0, 44));
       else if (ev.type === 'done') console.error('[' + t + '] ' + (ev.item.status === 'done' ? '✓' : '✗') + ' #' + ev.item.id + ' ' + ev.item.agent + ' ' + fmtMs(ev.item.elapsedMs) + '  进度 ' + ev.done + '/' + ev.total);
       else if (ev.type === 'retry') console.error('[' + t + '] ↻ #' + ev.id + ' ' + ev.from + '→' + ev.to + ' 换路（' + String(ev.error).slice(0, 70) + '）');
-      else if (ev.type === 'split') console.error('[' + t + '] ⇄ trae 会话上限 ' + ev.limit + '，超出的 ' + ev.count + ' 个任务改派给 ' + ev.to);
+      else if (ev.type === 'split') {
+        const why = ev.why
+          ? ev.from + '→' + ev.to + ' ' + ev.count + ' 个（' + ev.why + '）'
+          : ev.from + ' 会话上限 ' + ev.limit + '，超出的 ' + ev.count + ' 个改派给 ' + ev.to;
+        console.error('[' + t + '] ⇄ ' + why);
+      }
+      else if (ev.type === 'move') console.error('[' + t + '] ⇄ ' + ev.from + ' 不可用，' + ev.count + ' 个任务转给 ' + ev.to);
+      else if (ev.type === 'warn') console.error('[' + t + '] ! ' + ev.msg);
+      else if (ev.type === 'verify-fail') {
+        const why = (ev.checks || []).map((c) => c.name + '：' + String(c.detail || '').slice(0, 60)).join(' / ');
+        console.error('[' + t + '] ⚠ #' + ev.id + ' 验收未过 ' + (ev.target || '') + '  ' + why);
+      }
+      else if (ev.type === 'fix') console.error('[' + t + '] ↺ #' + ev.id + ' 第 ' + ev.round + ' 轮回喂重试 ' + (ev.target || ''));
     };
     const t0 = Date.now();
     let out = null;
@@ -840,6 +903,7 @@ try {
       out = await runSwarm(tasks, {
         mode: flags.mode, slots, resume: flags.resume, taskSource: src,
         switchOnFail: flags.switchOnFail,
+        land: flags.land, verify: flags.verify, maxFix: flags.maxFix, force: flags.force, deep: flags.deep,
         dispatchFn: (text, extra) => dispatch('swarm', text, extra),
         onProgress,
       });
@@ -851,6 +915,22 @@ try {
     const okN = out.results.filter(r => r.status === 'done').length;
     const rep = renderReport(src, out);
     console.error('[swarm] 完成 ' + okN + '/' + out.results.length + '，墙钟 ' + wall + 's，产物在 ' + out.dir);
+    // 落盘 / 验收汇总：只有开了 --land 或 --verify 才有意义，没开就什么都不说（保持旧行为干净）
+    if (flags.land || flags.verify) {
+      const withV = out.results.filter((r) => r.verify);
+      const vOk = withV.filter((r) => r.verify.ok);
+      const written = out.results.filter((r) => r.land && (r.land.result === 'written' || r.land.result === 'need-force'));
+      const needForce = out.results.filter((r) => r.land && r.land.result === 'need-force');
+      if (flags.land) console.error('[swarm] 落盘 ' + written.length + '/' + out.results.length + ' 个文件' + (needForce.length ? '（' + needForce.length + ' 个已存在需 --force）' : ''));
+      console.error('[swarm] 验收 ' + vOk.length + '/' + (withV.length || out.results.length) + ' 通过');
+      for (const r of out.results) {
+        const v = r.verify;
+        if (!v) continue;
+        const mark = v.ok ? '✓' : '✗';
+        const bad = (v.checks || []).filter((c) => !c.ok).map((c) => c.name).join(',');
+        console.error('  ' + mark + ' #' + r.id + ' ' + (v.target || '(无目标)') + (bad ? '  未过：' + bad : ''));
+      }
+    }
     if (flags.out) {
       try { fs.writeFileSync(flags.out, rep, 'utf8'); console.error('[swarm] 报告已写入 ' + flags.out); } catch (e) { console.error('[swarm] 写报告失败：' + e.message); }
     } else {

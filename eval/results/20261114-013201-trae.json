@@ -1,0 +1,114 @@
+{
+  "ts": "20261114-013201",
+  "agent": "trae",
+  "total": 3,
+  "pass": 0,
+  "rate": 0,
+  "durationMs": 62449,
+  "avgMs": 18891,
+  "rows": [
+    {
+      "id": "py-top-lnk",
+      "agent": "trae",
+      "pass": false,
+      "ms": 17421,
+      "err": null,
+      "checks": [
+        {
+          "name": "非空",
+          "ok": true,
+          "detail": "86 字符"
+        },
+        {
+          "name": "编译",
+          "ok": false,
+          "detail": "    ʹ��ʾ����\r"
+        },
+        {
+          "name": "必含#1",
+          "ok": false,
+          "detail": "没匹配到 /def top_lnk/"
+        },
+        {
+          "name": "禁含#1",
+          "ok": true,
+          "detail": "import pandas"
+        },
+        {
+          "name": "禁含#2",
+          "ok": true,
+          "detail": "import numpy"
+        },
+        {
+          "name": "行为",
+          "ok": false,
+          "detail": "运行失败：  File \"C:\\Users\\kkk\\AppData\\Local\\Temp\\orchestra-eval-rvUJ7F\\candidate.py\", line 1\r /     ʹ��ʾ����\r /         ^\r / SyntaxError: invalid character '��' (U+FF1A)\r"
+        }
+      ],
+      "chars": 86,
+      "text": "使用示例：\n\nPython\n\n这里 times 表示额外重试次数；只捕获 Exception，不会拦截 KeyboardInterrupt 等 BaseException。"
+    },
+    {
+      "id": "py-dedup-keep-order",
+      "agent": "trae",
+      "pass": false,
+      "ms": 18685,
+      "err": null,
+      "checks": [
+        {
+          "name": "非空",
+          "ok": true,
+          "detail": "86 字符"
+        },
+        {
+          "name": "编译",
+          "ok": false,
+          "detail": "    ʹ��ʾ����\r"
+        },
+        {
+          "name": "必含#1",
+          "ok": false,
+          "detail": "没匹配到 /def dedup/"
+        },
+        {
+          "name": "行为",
+          "ok": false,
+          "detail": "运行失败：  File \"C:\\Users\\kkk\\AppData\\Local\\Temp\\orchestra-eval-vnsrTC\\candidate.py\", line 1\r /     ʹ��ʾ����\r /         ^\r / SyntaxError: invalid character '��' (U+FF1A)\r"
+        }
+      ],
+      "chars": 86,
+      "text": "使用示例：\n\nPython\n\n这里 times 表示额外重试次数；只捕获 Exception，不会拦截 KeyboardInterrupt 等 BaseException。"
+    },
+    {
+      "id": "py-retry-decorator",
+      "agent": "trae",
+      "pass": false,
+      "ms": 20567,
+      "err": null,
+      "checks": [
+        {
+          "name": "非空",
+          "ok": true,
+          "detail": "86 字符"
+        },
+        {
+          "name": "编译",
+          "ok": false,
+          "detail": "    ʹ��ʾ����\r"
+        },
+        {
+          "name": "必含#1",
+          "ok": false,
+          "detail": "没匹配到 /def retry/"
+        },
+        {
+          "name": "行为",
+          "ok": false,
+          "detail": "运行失败：  File \"C:\\Users\\kkk\\AppData\\Local\\Temp\\orchestra-eval-5Aq6r7\\candidate.py\", line 1\r /     ʹ��ʾ����\r /         ^\r / SyntaxError: invalid character '��' (U+FF1A)\r"
+        }
+      ],
+      "chars": 86,
+      "text": "使用示例：\n\nPython\n\n这里 times 表示额外重试次数；只捕获 Exception，不会拦截 KeyboardInterrupt 等 BaseException。"
+    }
+  ]
+}

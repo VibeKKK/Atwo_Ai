@@ -1,0 +1,114 @@
+{
+  "ts": "20261114-012909",
+  "agent": "trae",
+  "total": 3,
+  "pass": 0,
+  "rate": 0,
+  "durationMs": 68424,
+  "avgMs": 20941,
+  "rows": [
+    {
+      "id": "py-top-lnk",
+      "agent": "trae",
+      "pass": false,
+      "ms": 17396,
+      "err": null,
+      "checks": [
+        {
+          "name": "非空",
+          "ok": true,
+          "detail": "86 字符"
+        },
+        {
+          "name": "编译",
+          "ok": false,
+          "detail": "    ʹ��ʾ����\r"
+        },
+        {
+          "name": "必含#1",
+          "ok": false,
+          "detail": "没匹配到 /def top_lnk/"
+        },
+        {
+          "name": "禁含#1",
+          "ok": true,
+          "detail": "import pandas"
+        },
+        {
+          "name": "禁含#2",
+          "ok": true,
+          "detail": "import numpy"
+        },
+        {
+          "name": "行为",
+          "ok": false,
+          "detail": "运行失败：  File \"C:\\Users\\kkk\\AppData\\Local\\Temp\\orchestra-eval-kggd4h\\candidate.py\", line 1\r /     ʹ��ʾ����\r /         ^\r / SyntaxError: invalid character '��' (U+FF1A)\r"
+        }
+      ],
+      "chars": 86,
+      "text": "使用示例：\n\nPython\n\n这里 times 表示额外重试次数；只捕获 Exception，不会拦截 KeyboardInterrupt 等 BaseException。"
+    },
+    {
+      "id": "py-dedup-keep-order",
+      "agent": "trae",
+      "pass": false,
+      "ms": 25969,
+      "err": null,
+      "checks": [
+        {
+          "name": "非空",
+          "ok": true,
+          "detail": "86 字符"
+        },
+        {
+          "name": "编译",
+          "ok": false,
+          "detail": "    ʹ��ʾ����\r"
+        },
+        {
+          "name": "必含#1",
+          "ok": false,
+          "detail": "没匹配到 /def dedup/"
+        },
+        {
+          "name": "行为",
+          "ok": false,
+          "detail": "运行失败：  File \"C:\\Users\\kkk\\AppData\\Local\\Temp\\orchestra-eval-tq7ndz\\candidate.py\", line 1\r /     ʹ��ʾ����\r /         ^\r / SyntaxError: invalid character '��' (U+FF1A)\r"
+        }
+      ],
+      "chars": 86,
+      "text": "使用示例：\n\nPython\n\n这里 times 表示额外重试次数；只捕获 Exception，不会拦截 KeyboardInterrupt 等 BaseException。"
+    },
+    {
+      "id": "py-retry-decorator",
+      "agent": "trae",
+      "pass": false,
+      "ms": 19459,
+      "err": null,
+      "checks": [
+        {
+          "name": "非空",
+          "ok": true,
+          "detail": "710 字符"
+        },
+        {
+          "name": "编译",
+          "ok": false,
+          "detail": "    \"\"\"���״γ���˳��ȥ�أ�ͬʱ֧�ֿɹ�ϣ�벻�ɹ�ϣ��dict��list �ȣ�Ԫ�ء�\r"
+        },
+        {
+          "name": "必含#1",
+          "ok": false,
+          "detail": "没匹配到 /def retry/"
+        },
+        {
+          "name": "行为",
+          "ok": false,
+          "detail": "运行失败：  File \"C:\\Users\\kkk\\AppData\\Local\\Temp\\orchestra-eval-OHOi7o\\candidate.py\", line 2\r /     \"\"\"���״γ���˳��ȥ�أ�ͬʱ֧�ֿɹ�ϣ�벻�ɹ�ϣ��dict��list �ȣ�Ԫ�ء�\r /     ^\r / SyntaxError: unterminated triple-quoted string literal (detected at line 11)\r"
+        }
+      ],
+      "chars": 710,
+      "text": "def dedup(items):\n    \"\"\"按首次出现顺序去重，同时支持可哈希与不可哈希（dict、list 等）元素。\n\n    可哈希元素走 set，平均 O(1)；不可哈希元素退化为与已见元素逐个 == 比较，\n    避免为了去重强转可哈希而丢失原对象。\n    \"\"\"\n    seen_hashable = set()\n    seen_unhashable = []\n    result = []\n    for item in items:\n        try:\n            hash(item)\n        except TypeError:\n            if any(item == other for other in seen_unhashable):\n                continue\n            seen_unhashable.append(item)\n        else:\n            if item in seen_hashable:\n                continue\n            seen_hashable.add(item)\n        result.append(item)\n    return result\n\n两点说明：\n\n全部元素不可哈希时复杂度退化为 O(n²)，但 dict/list 规模通常不大，换来的语义是「相等即去重、返回原对象」，符合直觉。\n\nfloat('nan')\n 与自身不相等，NaN 不会被去重；如需把 NaN 视为重复，需额外特判。"
+    }
+  ]
+}

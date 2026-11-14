@@ -1,0 +1,42 @@
+{
+  "ts": "20261114-010801",
+  "agent": "trae",
+  "total": 1,
+  "pass": 0,
+  "rate": 0,
+  "durationMs": 31813,
+  "avgMs": 28185,
+  "rows": [
+    {
+      "id": "py-retry-decorator",
+      "agent": "trae",
+      "pass": false,
+      "ms": 28185,
+      "err": null,
+      "checks": [
+        {
+          "name": "非空",
+          "ok": true,
+          "detail": "31 字符"
+        },
+        {
+          "name": "编译",
+          "ok": false,
+          "detail": "    from functools\r"
+        },
+        {
+          "name": "必含#1",
+          "ok": false,
+          "detail": "没匹配到 /def retry/"
+        },
+        {
+          "name": "行为",
+          "ok": false,
+          "detail": "运行失败：  File \"C:\\Users\\kkk\\AppData\\Local\\Temp\\orchestra-eval-7cIoZ5\\candidate.py\", line 5\r /     from functools\r /                   ^\r / SyntaxError: invalid syntax\r"
+        }
+      ],
+      "chars": 31,
+      "text": "1\n2\n\nimport time\nfrom functools"
+    }
+  ]
+}

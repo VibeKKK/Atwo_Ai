@@ -5,6 +5,7 @@
 //   node store.mjs get  <表> <键>            [--db ...]
 //   node store.mjs list <表>                 [--db ...]
 //   node store.mjs del  <表> <键>            [--db ...] [--note 原因]
+//   node store.mjs history <表> <键>         [--db ...] [--limit 50]
 //   node store.mjs log  [--since 30m] [--by agent] [--table 表] [--db ...]
 //   node store.mjs tables | stat | compact   [--db ...]
 //   node store.mjs dbs                        两套库一起看
@@ -85,6 +86,17 @@ try {
     if (table === undefined || key === undefined) throw new Error('用法：del <表> <键> [--db memory]');
     const r = open(DB).del(table, key, { by: flag('by'), note: flag('note', '') });
     if (!out({ ok: true, op: 'del', db: r.db, table, key, seq: r.seq, by: r.by, note: '逻辑删除，历史保留' })) console.log(`✓ [${r.db}] del ${table}/${key}  seq=${r.seq}  by=${r.by}（逻辑删除，历史保留）`);
+  } else if (cmd === 'history') {
+    const [table, key] = pos(1, 2);
+    if (table === undefined || key === undefined) throw new Error('用法：history <表> <键> [--db memory] [--limit 50]');
+    const rows = open(DB).history(table, key, { limit: Number(flag('limit', 50)) });
+    if (out({ ok: true, db: DB, table, key, count: rows.length, history: rows })) process.exit(0);
+    if (!rows.length) { console.log(`(${DB} 库里 ${table}/${key} 没有历史)`); process.exit(0); }
+    console.log(`[${DB}] ${table}/${key} 共 ${rows.length} 次变化（旧 → 新）`);
+    rows.forEach((r, i) => {
+      const t = r.ts.replace('T', ' ').slice(0, 19);
+      console.log(`  ${String(i + 1).padStart(2)}. ${t}  ${String(r.by).padEnd(18)} ${r.op === 'del' ? 'DEL' : 'PUT'}  ${r.op === 'del' ? '(删除)' : short(r.val, 70)}`);
+    });
   } else if (cmd === 'log') {
     const rows = open(DB).log({
       sinceMs: sinceToMs(flag('since', '30m')),
@@ -112,7 +124,7 @@ try {
     const r = open(DB).compact({ keepRecent: Number(flag('keep', 200)) });
     if (!out({ ok: true, op: 'compact', ...r })) console.log(`✓ [${r.db}] 已压缩：快照 ${r.snapshotRows} 行，各 journal 保留最近 ${r.keptTail} 条`);
   } else {
-    console.error('未知命令：' + cmd + '\n可用：put / get / list / del / log / tables / stat / compact / dbs');
+    console.error('未知命令：' + cmd + '\n可用：put / get / list / del / history / log / tables / stat / compact / dbs');
     process.exit(2);
   }
 } catch (e) {

@@ -15,7 +15,9 @@ import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { config } from '../lib/config.mjs';
 
-const require = createRequire('C:/Users/kkk/.dsh/profiles/desktop/node_modules/');
+// ws 不装进本仓库（保持零依赖），从 DSH profile 的 node_modules 里借；
+// 路径由 lib/config.mjs 给出（DSH_HOME / config.local.json 的 dshRoot 可覆盖）。
+const require = createRequire(path.join(config.dshRoot, 'profiles', 'desktop', 'node_modules') + path.sep);
 const WebSocket = require('ws');
 
 const PORT = Number(process.env.WB_PORT || 9224);
@@ -153,7 +155,22 @@ export async function ask(prompt, { timeoutMs = 240000, settleMs = 3500 } = {}) 
   await ensureWorkbuddy();
   const c = await connect();
   try {
-    const base = JSON.parse(await c.ev(SNAP_JS));
+    // 发送前先等页面安静：上一轮还在流式生成时取的基线，会让「页面没变」被误判成
+    // 「答案稳定」，最后把上一条答案当成本次结果返回（实测串台：问 DAG 回 CAP）。
+    // 静默数据损坏比调用失败严重得多，所以这里宁可多等 12 秒。
+    let base = JSON.parse(await c.ev(SNAP_JS));
+    {
+      let quiet = 0;
+      const quietDeadline = Date.now() + 12000;
+      while (Date.now() < quietDeadline && quiet < 3) {
+        await sleep(700);
+        const s = JSON.parse(await c.ev(SNAP_JS));
+        const runningNow = RUNNING_RE.test(s.text || '');
+        if (!runningNow && s.text === base.text && s.agentCount === base.agentCount) quiet++;
+        else { quiet = 0; base = s; }
+      }
+      if (quiet < 3) console.error('[提示] workbuddy 页面 ' + Math.round((Date.now() - (quietDeadline - 12000)) / 1000) + 's 未安静，继续发送');
+    }
     if (!base.hasEdit) throw new Error('界面已变：找不到 Slate 输入框（div[data-slate-editor]）');
 
     // 聚焦 + 清空
@@ -172,7 +189,8 @@ export async function ask(prompt, { timeoutMs = 240000, settleMs = 3500 } = {}) 
       if(!b) return 'no-button'; if(b.disabled) return 'disabled'; b.click(); return 'clicked'})()`);
     if (clicked !== 'clicked') throw new Error('发送失败：' + clicked);
 
-    let lastText = base.text;
+    // 不继承基线文本：只接受「发送之后新出现的」内容，否则旧答案会被当成新答案。
+    let lastText = '';
     let stable = 0;
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
@@ -186,6 +204,7 @@ export async function ask(prompt, { timeoutMs = 240000, settleMs = 3500 } = {}) 
         stable = 0;
         continue;
       }
+      if (s.text === base.text) { stable = 0; continue; }   // 页面还没动，别把旧答案记成新答案
       if (s.agentCount > base.agentCount && s.text && s.text !== lastText) {
         lastText = s.text; stable = 0;
       } else if (s.text === lastText && lastText) {

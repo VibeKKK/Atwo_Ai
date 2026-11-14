@@ -82,7 +82,7 @@ function askOnce(agent, prompt, timeoutMs) {
       : [path.join(ROOT, 'orchestra.mjs'), 'ask', agent, prompt];
     const child = spawn(process.execPath, args, {
       cwd: ROOT,
-      env: { ...process.env, ORCH_NO_CONTRACT: '1', ORCH_NO_CACHE: '1', ORCH_QUIET_BUDGET: '1' },
+      env: { ...process.env, ORCH_NO_CONTRACT: '1', ORCH_NO_CACHE: '1', ORCH_QUIET_BUDGET: '1', ...(agent === 'auto' ? {} : { ORCH_NO_FALLBACK: '1', ORCH_NO_SWARM: '1' }) },
       windowsHide: true,
     });
     let out = '', err = '';

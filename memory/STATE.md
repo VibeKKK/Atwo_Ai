@@ -47,9 +47,9 @@
 4. 若 CodeBuddy 登录态过期：起 node bin/codebuddy --serve --port 63910 --auth none 后浏览器点「国内站点登录」
 
 ## 最近一次派活
-- 时间：2026-11-14 00:37
-- 指派给：trae
-- 任务：写一个 Python 函数 clamp(x, lo, hi)，第 1 行必须是 / * * 开头的三行 JSDoc 块注释（形如 / * * \n * 说明 \n */），整个代码块必须放在三个反引号的代码围栏里。只输出围栏内容，不要任何解
-- 耗时：49.4s
+- 时间：2026-11-14 21:35
+- 指派给：workbuddy
+- 任务：[swarm workbuddy #2 修1] 写 docs/probe-guide.md，中文说明 clamp、isBlank、chunk 三个函
+- 耗时：155.1s
 - 结果：成功
-- 产出长度：8300 字符
+- 产出长度：5108 字符

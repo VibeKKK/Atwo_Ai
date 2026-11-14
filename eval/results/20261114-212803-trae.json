@@ -1,0 +1,145 @@
+{
+  "ts": "20261114-212803",
+  "agent": "trae",
+  "total": 4,
+  "pass": 3,
+  "rate": 75,
+  "durationMs": 87424,
+  "avgMs": 19957,
+  "rows": [
+    {
+      "id": "py-top-lnk",
+      "agent": "trae",
+      "pass": true,
+      "ms": 18787,
+      "err": null,
+      "checks": [
+        {
+          "name": "非空",
+          "ok": true,
+          "detail": "580 字符"
+        },
+        {
+          "name": "编译",
+          "ok": true,
+          "detail": "python 通过"
+        },
+        {
+          "name": "必含#1",
+          "ok": true,
+          "detail": "def top_lnk"
+        },
+        {
+          "name": "禁含#1",
+          "ok": true,
+          "detail": "import pandas"
+        },
+        {
+          "name": "禁含#2",
+          "ok": true,
+          "detail": "import numpy"
+        },
+        {
+          "name": "行为",
+          "ok": true,
+          "detail": "UNIT-OK"
+        }
+      ],
+      "chars": 580,
+      "text": "import os\n\ndef top_lnk(root, n):\n    \"\"\"递归查找 root 下所有 .lnk 文件，按大小降序返回前 n 个 (size, path)。\"\"\"\n    if n <= 0:\n        return []\n\n    found = []\n    for dirpath, _dirnames, filenames in os.walk(root):\n        for name in filenames:\n            if not name.lower().endswith('.lnk'):\n                continue\n            path = os.path.join(dirpath, name)\n            try:\n                size = os.path.getsize(path)\n            except OSError:\n                continue\n            found.append((size, path))\n\n    found.sort(key=lambda item: item[0], reverse=True)\n    return found[:n]"
+    },
+    {
+      "id": "py-dedup-keep-order",
+      "agent": "trae",
+      "pass": true,
+      "ms": 22537,
+      "err": null,
+      "checks": [
+        {
+          "name": "非空",
+          "ok": true,
+          "detail": "504 字符"
+        },
+        {
+          "name": "编译",
+          "ok": true,
+          "detail": "python 通过"
+        },
+        {
+          "name": "必含#1",
+          "ok": true,
+          "detail": "def dedup"
+        },
+        {
+          "name": "行为",
+          "ok": true,
+          "detail": "UNIT-OK"
+        }
+      ],
+      "chars": 504,
+      "text": "def dedup(items):\n    \"\"\"去重并保持首次出现顺序，同时支持可哈希与不可哈希元素。\"\"\"\n    seen_hashable = set()\n    seen_unhashable = []\n    result = []\n\n    for item in items:\n        try:\n            hash(item)\n        except TypeError:\n            if any(item == existing for existing in seen_unhashable):\n                continue\n            seen_unhashable.append(item)\n        else:\n            if item in seen_hashable:\n                continue\n            seen_hashable.add(item)\n        result.append(item)\n\n    return result"
+    },
+    {
+      "id": "py-retry-decorator",
+      "agent": "trae",
+      "pass": true,
+      "ms": 18523,
+      "err": null,
+      "checks": [
+        {
+          "name": "非空",
+          "ok": true,
+          "detail": "582 字符"
+        },
+        {
+          "name": "编译",
+          "ok": true,
+          "detail": "python 通过"
+        },
+        {
+          "name": "必含#1",
+          "ok": true,
+          "detail": "def retry"
+        },
+        {
+          "name": "行为",
+          "ok": true,
+          "detail": "UNIT-OK"
+        }
+      ],
+      "chars": 582,
+      "text": "import time\nfrom functools import wraps\n\ndef retry(times=3, delay=0):\n    \"\"\"失败最多重试 times 次（含首次），全部失败时抛出最后一次异常。\"\"\"\n    def decorator(func):\n        @wraps(func)\n        def wrapper(*args, **kwargs):\n            last_error = None\n            for attempt in range(times):\n                try:\n                    return func(*args, **kwargs)\n                except Exception as error:\n                    last_error = error\n                    if attempt < times - 1:\n                        time.sleep(delay)\n            raise last_error\n\n        return wrapper\n\n    return decorator"
+    },
+    {
+      "id": "py-csv-dict",
+      "agent": "trae",
+      "pass": false,
+      "ms": 19980,
+      "err": null,
+      "checks": [
+        {
+          "name": "非空",
+          "ok": true,
+          "detail": "617 字符"
+        },
+        {
+          "name": "编译",
+          "ok": false,
+          "detail": "    with open(path, newline='', encoding='\r"
+        },
+        {
+          "name": "必含#1",
+          "ok": false,
+          "detail": "没匹配到 /DictReader/"
+        },
+        {
+          "name": "行为",
+          "ok": false,
+          "detail": "运行失败：  File \"C:\\Users\\kkk\\AppData\\Local\\Temp\\orchestra-eval-8NAxsW\\candidate.py\", line 24\r /     with open(path, newline='', encoding='\r /                                          ^\r / SyntaxError: unterminated string literal (detected at line 24)\r"
+        }
+      ],
+      "chars": 617,
+      "text": "import csv\nimport re\n\n_INT_PATTERN = re.compile(r'^[+-]?\\d+$')\n_FLOAT_PATTERN = re.compile(r'^[+-]?(\\d+\\.\\d*|\\.\\d+|\\d+)([eE][+-]?\\d+)?$')\n\ndef _convert(value):\n    \"\"\"把纯数字字符串转为 int/float，空值与非数字原样返回。\"\"\"\n    if not isinstance(value, str):\n        return value\n    if value == '':\n        return ''\n    text = value.strip()\n    if not text:\n        return value\n    if _INT_PATTERN.match(text):\n        return int(text)\n    if _FLOAT_PATTERN.match(text):\n        return float(text)\n    return value\n\ndef read_csv_dict(path):\n    \"\"\"读取 CSV，返回 list[dict]，数字字段自动转为 int 或 float。\"\"\"\n    with open(path, newline='', encoding='"
+    }
+  ]
+}

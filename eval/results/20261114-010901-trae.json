@@ -1,0 +1,42 @@
+{
+  "ts": "20261114-010901",
+  "agent": "trae",
+  "total": 1,
+  "pass": 0,
+  "rate": 0,
+  "durationMs": 36928,
+  "avgMs": 33888,
+  "rows": [
+    {
+      "id": "py-retry-decorator",
+      "agent": "trae",
+      "pass": false,
+      "ms": 33888,
+      "err": null,
+      "checks": [
+        {
+          "name": "非空",
+          "ok": true,
+          "detail": "59 字符"
+        },
+        {
+          "name": "编译",
+          "ok": false,
+          "detail": "    def retry(times=3,\r"
+        },
+        {
+          "name": "必含#1",
+          "ok": true,
+          "detail": "def retry"
+        },
+        {
+          "name": "行为",
+          "ok": false,
+          "detail": "运行失败：  File \"C:\\Users\\kkk\\AppData\\Local\\Temp\\orchestra-eval-8zzCP1\\candidate.py\", line 4\r /     def retry(times=3,\r /              ^\r / SyntaxError: '(' was never closed\r"
+        }
+      ],
+      "chars": 59,
+      "text": "import time\nfrom functools import wraps\n\ndef retry(times=3,"
+    }
+  ]
+}

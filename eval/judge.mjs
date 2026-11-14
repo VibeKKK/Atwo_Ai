@@ -8,12 +8,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { checkSyntax } from '../lib/syntax.mjs';
+import { config } from '../lib/config.mjs';
 
-const PY_CANDIDATES = [
-  process.env.PYTHON,
-  'C:/Users/kkk/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/python.exe',
-  'python3', 'python',
-].filter(Boolean);
+// 候选清单与 lib/syntax.mjs 共用同一份（lib/config.mjs），换机器不用改两处
+const PY_CANDIDATES = [...config.pythonCandidates, 'python3', 'python'].filter(Boolean);
 
 let PY = null;
 function pythonBin() {

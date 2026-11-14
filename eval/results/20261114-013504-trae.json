@@ -1,0 +1,42 @@
+{
+  "ts": "20261114-013504",
+  "agent": "trae",
+  "total": 1,
+  "pass": 0,
+  "rate": 0,
+  "durationMs": 97503,
+  "avgMs": 95058,
+  "rows": [
+    {
+      "id": "py-retry-decorator",
+      "agent": "trae",
+      "pass": false,
+      "ms": 95058,
+      "err": null,
+      "checks": [
+        {
+          "name": "非空",
+          "ok": true,
+          "detail": "10 字符"
+        },
+        {
+          "name": "编译",
+          "ok": true,
+          "detail": "python 通过"
+        },
+        {
+          "name": "必含#1",
+          "ok": false,
+          "detail": "没匹配到 /def retry/"
+        },
+        {
+          "name": "行为",
+          "ok": false,
+          "detail": "运行失败：  File \"C:\\Users\\kkk\\AppData\\Local\\Temp\\orchestra-eval-I7CZ2L\\candidate.py\", line 1, in <module>\r /     (û���õ������ı�)\r /      ^^^^^^^^^^^^^^^^\r / NameError: name 'û���õ������ı�' is not defined\r"
+        }
+      ],
+      "chars": 10,
+      "text": "(没有拿到新增文本)"
+    }
+  ]
+}

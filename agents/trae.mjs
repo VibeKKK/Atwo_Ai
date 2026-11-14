@@ -235,7 +235,34 @@ async function pageText(c, scope) {
 }
 
 /** 判断 Trae 是否还在干活。作用域尽量收窄，避免用户提问里出现关键词就永远 busy */
+// 2026-11-14 决定性发现（_probe_busy2.mjs 实测）：Trae 没有 aria-busy、没有独立停止按钮，
+// 但**发送键自己就是状态指示灯** —— 同一个 button.chat-input-v2-send-button：
+//   · 生成中：svg path 以 `M9.9345` 开头（方块 = 停止），class 里没有 disabled
+//   · 空闲：  svg path 以 `M7.65576` 开头（上箭头 = 发送）
+// 这比「看文本变没变」可靠得多：文本判据分不清「答案迟到 / 回声 / 已写完」三种状态，
+// 而按钮状态由界面自己维护，且与流式文本无关。
+async function genState(c) {
+  const r = await c.js(`(() => {
+    const b = document.querySelector('button.chat-input-v2-send-button');
+    if (!b) return 'no-button';
+    const svg = b.querySelector('svg');
+    const p = svg && svg.querySelector('path');
+    const d = p ? (p.getAttribute('d') || '') : '';
+    const cls = String(b.className || '');
+    if (/^M9\\.9345/.test(d)) return 'generating';          // 方块图标 = 停止键
+    if (/^M7\\.65576/.test(d)) return 'idle';               // 上箭头 = 发送键
+    if (/disabled/.test(cls)) return 'idle';
+    return 'unknown:' + d.slice(0, 12);
+  })()`);
+  return String(r || 'unknown');
+}
+
 async function isBusy(c) {
+  // 1) 结构信号（首选）：发送键图标是不是「方块/停止」
+  const st = await genState(c).catch(() => 'unknown');
+  if (st === 'generating') return true;
+  if (st === 'idle') return false;
+  // 2) 退化信号：只在结构信号拿不到（按钮不存在 / 图标变了）时才看文本与停止按钮
   return c.js(`(() => {
     // 只看页面末尾：历史消息里残留的「思考中」会让整页判断永远 busy
     const tail = (document.body.innerText || '').slice(-1200);
@@ -405,8 +432,14 @@ async function recoverSend(c, text) {
 function extractReply(text) {
   const s = String(text || '');
   const i = s.lastIndexOf('TRAE');
-  const j = s.lastIndexOf('由 AI 生成');
-  let body = (i >= 0 && j > i) ? s.slice(i + 4, j) : s;
+  // 2026-11-14 实测修正：Trae CN 1.107 的回答**没有**「由 AI 生成」尾标（出现 0 次），
+  // 旧逻辑 j > i 永不成立 → 直接返回整段 .ai-chat 全文 → extractCode 抓到最早那个
+  // 围栏（旧任务的答案），表现为「问 clamp 回的是上一轮的 retry 装饰器」。
+  // 正确做法：以「最后一个 TRAE」为起点（那必然是最近一次助手回复），
+  // 再把可能存在的尾标当可选裁剪 —— 有就切，没有就不切。
+  let body = i >= 0 ? s.slice(i + 4) : s;
+  const j = body.lastIndexOf('由 AI 生成');
+  if (j > 0) body = body.slice(0, j);
   body = body.replace(/^\s*思考过程\s*$/m, '');
   return body.trim();
 }
@@ -439,11 +472,37 @@ function cleanCodeChrome(text) {
   return noCopy.join('\n').trim();
 }
 
-/** 从文本里抽出第一个 ```lang … ``` 代码块；没有围栏就原样返回 */
+// 修复 markdown 渲染吃掉成对星号造成的损伤。
+// 2026-11-14 实测：Trae 的回答区不是 pre 标签，裸 JSON 里的 JSDoc 开头（斜杠加两个星号）
+// 会被浏览器当 bold 解析，结果只剩一个斜杠（两个星号都被吃掉）；而 JSDoc 结尾的
+// 星号加斜杠是单个星号，反而不受影响 —— 非对称损伤。
+// 落盘后 node --check 立刻报 "Invalid regular expression: missing /"。
+// 判据很窄：一行只有斜杠或斜杠加星号，且下一行以星号开头 → 原本必然是 JSDoc 开头。
+export function repairBoldMangled(code) {
+  return String(code || '')
+    .replace(/^([ \t]*)\/\*(?=\n[ \t]*\*)/gm, '$1/**')
+    .replace(/^([ \t]*)\/(?=\n[ \t]*\*)/gm, '$1/**');
+}
+
+/** 从文本里抽出代码：优先认契约 JSON，其次第一个 ```lang … ``` 围栏，都没有就原样返回 */
 export function extractCode(text) {
   const s = String(text || '');
+  // 2026-11-14 实测补充：Trae 输出契约时**不走围栏**，直接吐裸 JSON
+  // （`{"summary":"…","code":"…","notes":[…]}`）。只查围栏正则会整段 JSON 当代码返回，
+  // 落盘后 node --check 立刻失败。这里先按「从后往前」试 JSON.parse，
+  // 取最后一个能解析出 code/content/implementation 的对象 —— 最后一个才是本次回答。
+  const braced = s.match(/\{[\s\S]*\}/g) || [];
+  for (let k = braced.length - 1; k >= 0; k--) {
+    try {
+      const o = JSON.parse(braced[k]);
+      const code = o.code ?? o.content ?? o.implementation;
+      if (typeof code === 'string' && code.trim()) {
+        return repairBoldMangled(code.replace(/^\s*\n/, '').replace(/\s*$/, ''));
+      }
+    } catch { /* 不是合法 JSON，继续往前试 */ }
+  }
   const m = s.match(/```[a-zA-Z0-9_+-]*\s*\n([\s\S]*?)```/);
-  return (m ? m[1] : s).replace(/^\s*\n/, '').replace(/\s*$/, '');
+  return repairBoldMangled((m ? m[1] : s).replace(/^\s*\n/, '').replace(/\s*$/, ''));
 }
 
 const commonPrefixLen = (a, b) => {
@@ -531,6 +590,8 @@ export async function askTrae(prompt, opts = {}) {
 
     const beforeText = await pageText(c);
     let baseAns = await readAnswers(c);   // 发送前的回复容器数量（判断"是否新增一条"的基准）
+    // 2026-11-14 增（治串题）：记下发送前所有已知回合的指纹，收工时只认「不在这个集合里」的那条。
+    let baseFps = new Set(((baseAns && baseAns.list) || []).map((x) => x.fp));
     // Trae 的会话列表只保留最近若干条；接近上限后「回合数」不再增长，
     // 此时只有「文本指纹变化」可用 —— 同问题同答案会判不出来，需要开新对话。
     if (baseAns.turns >= 8) console.error('[提示] 当前会话已有 ' + baseAns.turns + ' 条回合（接近虚拟化上限），建议在 Trae 里开一个新对话以免判据失灵');
@@ -593,9 +654,20 @@ export async function askTrae(prompt, opts = {}) {
     const HARD_TIMEOUT = timeoutMs;
     let recovered = false;   // 本轮是否已经用过「开新对话重发」的恢复
     let lastText = '', stableSince = Date.now(), sawBusy = false, finished = false;
+    // 2026-11-14 新增：结构信号判定收工时，当场把容器文本抓下来存这里。
+    // 为什么必须在循环里抓：Trae 的会话列表是虚拟化的，收工后再读一次，turns 可能从 10 掉到 2
+    // （会话被切走/重排），`grew` 判据（2 > 10）为假 → 最终取到的答案是空串（实测 len=0）。
+    let capturedText = '';
+    let source0 = '';
     while (Date.now() - t0 < HARD_TIMEOUT) {
       await sleep(700);
       const ans = await readAnswers(c);
+    // 选「本次新产生」的那条回合：指纹不在 baseFps 里，且文本不像 prompt 本身
+    try {
+      const fresh = ((ans && ans.list) || []).slice().reverse()
+        .find((x) => !baseFps.has(x.fp) && String(x.text || '').replace(/\s/g, '').length > 20);
+      if (fresh) { capturedText = fresh.text; source0 = 'fresh-turn'; }
+    } catch { }
       const busy = await isBusy(c);
       // 2026-11-13 修：容器里先出现的是「用户自己那条消息」，此时 ans.text 已经变了但答案还没来。
       // 若把它当完成信号，就会在 3.5 秒后 break、抽出空答案（实测 ok=false len=0 src=container）。
@@ -621,6 +693,24 @@ export async function askTrae(prompt, opts = {}) {
       const fp = (ans.text && ans.text.length) ? ans.text : ptText.slice(-3000);
       if (DEBUG) console.error(`[poll ${((Date.now() - t0) / 1000).toFixed(1)}s] busy=${busy} turns=${ans.turns}(base ${baseAns.turns}) len=${ans.text.length} changed=${changed} pageGrew=${pageGrew}`);
       if (busy) sawBusy = true;
+      // 2026-11-14 新增（治三种竞态的根）：结构信号优先。
+      // 只要「发送键从方块变回箭头」（= 生成结束）且文本已经出现过变化，就不必再等 settle 窗口。
+      // 反过来，只要发送键还是方块，就绝不当成写完 —— 这条直接消灭「答案迟到」和「回声」：
+      // 迟到是因为在上一轮还没写完时就读了旧回合；回声是因为 prompt 刚回显就被当成答案。
+      const genSt = await genState(c).catch(() => 'unknown');
+      if (genSt === 'generating') sawBusy = true;
+      if (genSt === 'idle' && active && sawBusy) {
+        // 给流式渲染留一拍，避免读到半截
+        await sleep(Math.min(settleMs, 800));
+        const ans2 = await readAnswers(c);
+        const len2 = (ans2.text || '').length;
+        if (len2 > String(prompt).length + 5) {
+          if (DEBUG) console.error(`[finish] 结构信号 idle 且文本 ${len2} 字符 → 收工`);
+          capturedText = ans2.text;
+          finished = true;
+          break;
+        }
+      }
       // 快速失败：45 秒内既没新回合、文本也没变 —— 说明 Trae 没接这轮
       // （典型两种：会话已满到虚拟化上限、或答案与上一轮完全相同导致指纹不变）
       if (!active && Date.now() - t0 > 45000) {
@@ -656,6 +746,8 @@ export async function askTrae(prompt, opts = {}) {
           stableSince = Date.now();
         } else if (Date.now() - stableSince >= settleMs) {
           finished = true;
+          // 同一条道理：收工瞬间把文本留下，别指望循环结束后再读（虚拟化会让 turns 掉回去）
+          capturedText = (ans && ans.text) ? ans.text : (ptText || '');
           break;
         }
       } else {
@@ -673,7 +765,15 @@ export async function askTrae(prompt, opts = {}) {
     const grewNow = ans.turns > baseAns.turns && !!ans.text && ans.text.length > promptLenNow + 5;
     const activeNow = changedNow || grewNow;
     let added, source;
-    if (activeNow) {
+    if (DEBUG && capturedText) {
+      try { (await import('node:fs')).writeFileSync('_cap.txt', capturedText, 'utf8'); } catch { }
+    }
+    if (!activeNow && capturedText) {
+      // 结构信号当时抓到的文本才是真答案：这里 turns 已经掉回 2（< base 10），
+      // 所有「增长」判据都会判假。直接用捕获值。
+      added = cleanCodeChrome(extractReply(capturedText));
+      source = 'container-captured';
+    } else if (activeNow) {
       added = cleanCodeChrome(extractReply(ans.text));
       source = 'container';
     } else {
@@ -746,7 +846,10 @@ export const SEL = {
   // 助手回合容器
   // 2026-11-13 实测：Trae 更新后对话区变成 solo-lite-chat-panel + message-list-cache-item，
   // 旧的 turn__agent-message 已不存在；两个都留着，按顺序降级。
-  turn: ['div.message-list-cache-item', 'div.turn__agent-message', '[class*="turn__agent-message"]', '[data-testid*="agent-message"]'],
+  // 2026-11-14 实测（决定性）：message-list-cache-item 是**会话级外壳**（一个 cache-item 就是一整段对话，
+  // 实测 textContent 达 28,499 字符、含 50 个 <pre>），拿它当「一条回合」必然取到上一条/半截 → 这就是串题的根因。
+  // 真正的单条消息容器是 div.turn（子节点含 turn__user-message 与 div.markdown-renderer）。
+  turn: ['div.turn', 'div.message-list-cache-item', 'div.turn__agent-message', '[class*="turn__agent-message"]', '[data-testid*="agent-message"]'],
   // 回合内的 markdown 渲染容器（答案取最后一个）
   renderer: ['div.markdown-renderer', '[class*="markdown-renderer"]', '[class*="markdown-body"]'],
   // 输入框（可编辑区）
@@ -797,7 +900,19 @@ const ANSWER_JS = `(() => {
     const r = rs[rs.length - 1];
     if (r) text = ser(r).trim();
   }
-  return { turns: turns.length, text: text };
+  // 2026-11-14 补（治串题）：把最近 4 条回合各自的「指纹 + 文本」一起返回。
+  // 指纹 = 该回合 renderer 文本的头 40 + 尾 40 + 长度，用它判断「哪一条是本次新产生的」，
+  // 而不是「最后一条是谁」——虚拟化列表里最后一条常常还是上一题的答案。
+  const list = [];
+  for (let i = Math.max(0, turns.length - 4); i < turns.length; i++) {
+    const t = turns[i];
+    const rs = t ? t.querySelectorAll(REND) : [];
+    const r = rs && rs.length ? rs[rs.length - 1] : null;
+    const tx = r ? ser(r).trim() : '';
+    const head = tx.slice(0, 40), tail = tx.slice(-40);
+    list.push({ i, fp: head + '|' + tail + '|' + tx.length, text: tx });
+  }
+  return { turns: turns.length, text: text, list };
 })()`;
 
 // 额度/异常探针：Trae 免费积分用尽时会挂「升级会员立即获得大额积分」横幅，请求静默失败
@@ -820,6 +935,23 @@ async function probeState(c) {
 async function readAnswers(c) {
   try { return (await c.js(ANSWER_JS)) || { turns: 0, text: '' }; }
   catch { return { turns: 0, text: '' }; }
+}
+
+/** 抓到的文本是不是「写到一半」。
+ *  2026-11-14 实测：Trae 流式渲染会短暂进 idle，半截答案被当成完整收工
+ *  （py-csv-dict 在 encoding=' 处被截断 → SyntaxError: unterminated string literal）。
+ *  保守启发：宁可多等一轮，也不收半截。 */
+function looksTruncated(t) {
+  const s = String(t || '').trimEnd();
+  if (!s) return true;
+  const last = s.split('\n').pop().trim();
+  if (!last) return false;
+  if (/^```/.test(last)) return false;                  // 收尾围栏在，算写完
+  const sq = (last.match(/'/g) || []).length;
+  const dq = (last.match(/"/g) || []).length;
+  if (sq % 2 === 1 || dq % 2 === 1) return true;        // 引号没闭合
+  if (/[=,([{\\+*/%<>|&]$/.test(last)) return true;     // 行尾悬着运算符或开括号
+  return false;
 }
 
 /** 只读：拿当前页面的渲染文本（含滚动外内容） */
