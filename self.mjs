@@ -17,7 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { extractFiles, pickTodoFrom } from './lib/selfparse.mjs';
+import { extractFiles, extractPatches, applyPatch, pickTodoFrom } from './lib/selfparse.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const NODE = process.execPath;
@@ -168,15 +168,31 @@ say('[2/6] 交给 ' + agent + ' 出方案');
 //   ② max-turns 硬编码 1 → 直接 "Max turns (1) exceeded"。
 // 现在：放开只读工具 Read 让它自己核对 API，禁 Write/Edit（落盘由本脚本统一做，便于回滚）；
 // 超时放到 660s（一次生成一整个测试文件在 240s 里做不完）。
-const asked = run(['orchestra.mjs', 'ask', agent, buildPrompt(task)], {
-  timeout: 660000,
-  env: { CODEBUDDY_TOOLS: 'Read', CODEBUDDY_MAX_TURNS: '8', ORCH_TIMEOUT_MS: '660000' },
-});
-const answer = asked.stdout || asked.out;
+// 2026-11-15（A0）：SELF_ANSWER_FILE=<路径> 时跳过 agent，直接读该文件当回答——
+// 用来对「抽文件/抽补丁/写盘/回归/回滚」这条链做确定性验证，不必烧额度也不必等 DOM。
+const offlineAnswer = process.env.SELF_ANSWER_FILE;
+let answer;
+if (offlineAnswer) {
+  if (!fs.existsSync(offlineAnswer)) { say('  SELF_ANSWER_FILE 不存在：' + offlineAnswer); process.exit(1); }
+  answer = fs.readFileSync(offlineAnswer, 'utf8');
+  say('  离线模式：答案取自 ' + offlineAnswer + '（' + answer.length + ' 字符，未调用 agent）');
+} else {
+  const asked = run(['orchestra.mjs', 'ask', agent, buildPrompt(task)], {
+    timeout: 660000,
+    env: { CODEBUDDY_TOOLS: 'Read', CODEBUDDY_MAX_TURNS: '8', ORCH_TIMEOUT_MS: '660000' },
+  });
+  answer = asked.stdout || asked.out;
+}
 if (!answer.trim()) { say('  没拿到回答'); process.exit(1); }
 
 say('[3/6] 抽文件');
-const files = extractFiles(answer);
+let files = extractFiles(answer);
+// A0（2026-11-15）：模型对小改动倾向只给 diff，不给整文件。两条路都认。
+const patches = extractPatches(answer);
+if (!files.length && patches.length) {
+  say(`  整文件 0 个，补丁 ${patches.length} 个 → 走就地补丁`);
+  files = patches.map(p => ({ file: p.file, content: null, patch: p }));
+}
 if (!files.length) {
   say('  抽不出文件围栏 —— 原始回答已存 memory/self-answers/ 供排查');
   say('  回答前 300 字：' + JSON.stringify(answer.slice(0, 300)));
@@ -190,11 +206,22 @@ if (!files.length) {
   if (prId) run(['pr.mjs', 'reject', prId, '没有可应用的文件']);
   process.exit(1);
 }
+// 补丁先就地求解成新全文，后面写盘/干跑/回滚都按「整文件」统一处理
 for (const f of files) {
-  const bad = safeTarget(f.file);
-  say('  ' + (bad ? '✗ ' : '✓ ') + f.file + (bad ? '  ' + bad : '  ' + f.content.length + ' 字符'));
+  if (f.content != null) continue;
+  const abs = path.resolve(ROOT, f.file);
+  if (!fs.existsSync(abs)) { f.error = '补丁目标文件不存在'; continue; }
+  const r = applyPatch(fs.readFileSync(abs, 'utf8'), f.patch);
+  if (!r.ok) { f.error = r.reason; continue; }
+  f.content = r.text;
+  f.viaPatch = r.applied;
 }
-const accepted = files.filter(f => !safeTarget(f.file));
+for (const f of files) {
+  const bad = f.error || safeTarget(f.file);
+  const tag = f.viaPatch ? `⟲ 补丁 ${f.viaPatch} 处 → ` : '';
+  say('  ' + (bad ? '✗ ' : '✓ ') + f.file + (bad ? '  ' + bad : '  ' + tag + String(f.content || '').length + ' 字符'));
+}
+const accepted = files.filter(f => !f.error && !safeTarget(f.file));
 if (!accepted.length) { say('  全部被拒，退出'); if (prId) run(['pr.mjs', 'reject', prId, '无可应用文件']); process.exit(1); }
 
 if (!apply) {
