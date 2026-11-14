@@ -33,6 +33,7 @@ const TESTS = [
   ['lockpool', ['test/lockpool.mjs']],
   ['batch_offline', ['test/batch_offline.mjs']],
   ['ui_smoke', ['test/ui_smoke.mjs']],
+  ['store_history', ['test/store_history.mjs']],
   ['eval_selftest', ['eval/run.mjs', '--selftest']],
 ];
 

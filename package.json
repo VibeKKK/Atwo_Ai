@@ -49,7 +49,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node test/selftest.mjs && node test/lockpool.mjs && node test/batch_offline.mjs",
+    "test": "node test/selftest.mjs && node test/lockpool.mjs && node test/batch_offline.mjs && node test/store_history.mjs",
     "eval:check": "node eval/run.mjs --selftest",
     "list": "node orchestra.mjs list",
     "health": "node orchestra.mjs health",
