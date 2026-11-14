@@ -1,152 +1,189 @@
-probe-clamp 边界行为说明
+# probe 工具模块使用指南
 
-对应实现：lib/probe_clamp.mjs（ESM，命名导出 clamp / isBlank / chunk）。
-本文只描述边界行为：正常输入、非法输入、异常类型与触发顺序。
-三个函数都是纯函数，不修改入参，不做隐式类型转换。
+本文档介绍 `probe` 工具模块中三个核心函数的使用方式：`clamp`、`isBlank`、`chunk`。
+模块本身不依赖任何第三方库，可以直接在 Node.js 的 ESM 环境中引入使用。
 
-0. 总览
-添加到对话
-放大
-下载
-函数	作用	典型返回	主要异常
-clamp(n, lo, hi)	把 n 夹逼到闭区间 [lo, hi]	number	TypeError / RangeError
-isBlank(s)	判断字符串是否不含可见内容	boolean	无（不抛错）
-chunk(arr, size)	按固定长度切分数组	Array<Array<*>>	TypeError / RangeError
+```js
+import { clamp, isBlank, chunk } from './fix_clamp.mjs';
+```
 
-三条通用约定：
+三个函数都是纯函数，不会修改传入的参数，也不读取外部状态，
+因此在单元测试、服务端脚本和浏览器端代码中都可以放心调用。
 
-类型错用 TypeError，取值错用 RangeError：前者表示"这不是数值 / 数组"，后者表示"值本身超出了允许范围"。
-不静默兜底：非法入参不会返回 NaN、undefined 或空结果，问题在入口就暴露，不推迟到下游。
-不做隐式转换：0、false、[] 不会被悄悄当成数值或字符串；需要转换时由调用方显式完成。
-1. clamp(n, lo, hi)
-1.1 正常区间
-n < lo 返回 lo；n > hi 返回 hi；lo <= n <= hi 原样返回 n（含两个端点）。
-实现是 Math.min(Math.max(n, lo), hi)：先抬到下界，再压到上界，无需分支。
-返回值始终是 number，不做四舍五入，也不做字符串化。
-lo === hi 是合法区间：无论 n 是多少，都返回该端点值。
-1.2 lo > hi 时怎么处理（重点）
+## clamp
 
-结论：抛 RangeError，不静默交换端点，也不返回 NaN。​
+`clamp(n, lo, hi)` 用于把一个数值收敛到闭区间 `[lo, hi]` 之内，
+是三个函数里使用频率最高的一个。
 
-判定条件就是 lo > hi。区间上下界写反属于调用方的定义错误，库不会自作主张交换两端后继续计算。
-错误信息会带出两个端点，便于定位：lo 不能大于 hi（lo=10, hi=0）。
-该检查位于三次 assertNumber 之后。因此 clamp(NaN, 10, 0) 得到的是 TypeError（n 先不合法），而不是 RangeError。
-若业务上确实需要容错，请在调用前自己归一化（const [a, b] = lo <= hi ? [lo, hi] : [hi, lo];），不要依赖库猜测意图。
-1.3 参数类型与 NaN
-n、lo、hi 必须都是 number，且不能是 NaN；否则抛 TypeError。
-校验顺序固定为 n → lo → hi，错误消息中的参数名可据此判断是哪一项出问题。
-字符串 '0'、null、undefined、大整数 1n 都不会被转换，一律 TypeError。
-NaN 单独拒绝：它不满足任何比较，也会污染 Math.max / Math.min 的结果。
-1.4 ±Infinity 端点
-端点允许 ±Infinity，用于表达"只有上界"或"只有下界"：clamp(1e9, -Infinity, 1) 返回 1。
-待夹逼值 n 也可以是 Infinity，会被上界正常收敛：clamp(Infinity, 0, 10) 返回 10。
-clamp(1, -Infinity, Infinity) 原样返回 1；lo === hi === Infinity 同样是合法区间。
-1.5 数值细节
-不四舍五入：clamp(2.5, 0, 3) 返回 2.5。
--0 在命中端点时可能被规范化为 +0：clamp(-0, 0, 10) 返回 0，这是 Math.max 的原生行为。
-不处理超过 Number.MAX_SAFE_INTEGER 后的精度问题，精度由调用方保证。
-1.6 行为速查
-添加到对话
-放大
-下载
-调用	结果	说明
-clamp(5, 0, 10)	5	区间内原样返回
-clamp(-3, 0, 10)	0	低于下界，抬到 lo
-clamp(42, 0, 10)	10	高于上界，压到 hi
-clamp(0, 0, 10)	0	端点包含在内
-clamp(1, 10, 0)	RangeError	lo > hi，不交换
-clamp(NaN, 0, 10)	TypeError	参数校验先于区间校验
-clamp(1, '0', 10)	TypeError	不做字符串转换
-2. isBlank(s)
-2.1 空白的定义
-空串 '' 返回 true。
-使用 /^[\s\u200B\u200C\u200D\u2060]*$/u 判定：整串必须全部由空白组成，只要出现一个非空白字符就返回 false。
-\s 覆盖 JS 的全部 Unicode 空白：半角空格、\t \n \r \v \f、NBSP \u00A0、全角空格 \u3000、行 / 段分隔符 \u2028 \u2029、BOM \uFEFF 等。
-另外显式补上不属于 \s 的零宽字符：ZWSP \u200B、ZWNJ \u200C、ZWJ \u200D、WORD JOINER \u2060，它们同样不产生可见内容。
-边界反例：NUL \u0000 不可见，但不属于空白集合，isBlank('\u0000') 返回 false。
-2.2 null 怎么处理（重点）
+### 参数说明
 
-结论：isBlank(null) 返回 true；所有非字符串入参都返回 true，函数不抛错。​
+下表列出 `clamp` 的参数含义与约束。
 
-涵盖 null、undefined、数字、布尔、对象、数组、Symbol、函数，以及包装对象 new String('')。
-语义是"没有可显示的字符串内容"，与 Apache Commons StringUtils.isBlank(null) === true 的惯例一致。
-因此用于表单校验时，null 与 '' 无需分别处理，一个判断即可覆盖。
-代价是它不做类型检查：若业务要求"必须传字符串"，请在调用前自行校验，或组合使用 typeof s === 'string' && isBlank(s)。
-2.3 为什么不做隐式转换
-刻意不调用 String(s)：否则 isBlank([]) 会因转成 '' 被判为空白，isBlank(0) 会因转成 '0' 被判为非空白，语义随转换规则漂移。
-由此产生一个必须记住的差异：isBlank(0) === true，而 isBlank('0') === false。
-需要"先转字符串再判定"时，请显式写 isBlank(String(s))，让意图出现在调用处。
-2.4 副作用与性能
-只做判定，不 trim，不分配新字符串。
-正则不带 g / y 标志，RegExp.test 不受 lastIndex 影响，重复调用结果稳定、无隐藏状态。
-时间复杂度 O(n)，n 为字符串长度；全空白串需要扫描到末尾才会返回 true。
-2.5 行为速查
-添加到对话
-放大
-下载
-调用	结果	说明
-isBlank('')	true	空串
-isBlank(' \t\n')	true	常见 ASCII 空白
-isBlank('\u3000\u00A0\uFEFF')	true	全角空格、NBSP、BOM
-isBlank('\u200B')	true	零宽字符显式纳入
-isBlank(null)	true	非字符串统一视为无内容
-isBlank('  a  ')	false	含非空白字符
-isBlank('0')	false	字符串 '0' 有可见内容
-isBlank('\u0000')	false	NUL 不算空白
-3. chunk(arr, size)
-3.1 正常切分
-每 size 个元素一段，最后一段不足 size 时原样保留：chunk([1, 2, 3, 4, 5], 2) → [[1, 2], [3, 4], [5]]。
-size >= arr.length 时返回只含一个分段的数组，例如 chunk([1, 2], 10) → [[1, 2]]。
-空数组返回 []，前提是 size 合法（见 3.3 的校验顺序说明）。
-3.2 size <= 0 怎么处理（重点）
+| 参数 | 类型 | 说明 |
+| --- | --- | --- |
+| `n` | `number` | 待限制的原始数值，允许传入 `NaN` |
+| `lo` | `number` | 区间下界，包含边界值本身 |
+| `hi` | `number` | 区间上界，包含边界值本身 |
 
-结论：0、负数、小数一律抛 RangeError；绝不会出现空分段或死循环。​
+### 返回值
 
-校验链分两步：先 assertNumber(size) 保证是 number 且非 NaN，再要求 Number.isFinite(size) && Number.isInteger(size) && size >= 1。
-size = 0、-1、1.5、Infinity → RangeError：size 必须是有限的正整数。
-size = NaN 属于类型问题，停在第一步 → TypeError；size = null / '2' / undefined 同样是 TypeError。
-为什么必须拒绝：步长为 0 或负数时 for (start += size) 不推进，会退化成死循环；小数则无法定义分段边界。
-极端大的合法整数（如 Number.MAX_SAFE_INTEGER）不额外限制，只会让结果退化为单段。
-3.3 校验顺序的坑
-顺序固定：先 Array.isArray(arr)，再校验 size。
-因此 chunk('abc', 0) 抛的是 TypeError（arr 不是数组），而不是 RangeError。
-chunk([], 0) 同样抛 RangeError：空数组不会短路，size 的合法性仍然检查。
-若希望空输入安静通过，由调用方显式短路：arr.length === 0 ? [] : chunk(arr, size)。
-3.4 拷贝语义
-返回新数组，每个分段也是 arr.slice(start, start + size) 生成的新数组；源数组不被修改。
-返回值不持有源数组本身的引用：改动结果中的分段结构，不会影响 arr。
-但这是浅拷贝：对象元素仍与源数组共享引用，修改对象内部字段会双向可见。
-稀疏数组的空洞在分段中保留，slice 不会把它填成 undefined。
-3.5 行为速查
-添加到对话
-放大
-下载
-调用	结果	说明
-chunk([1, 2, 3, 4, 5], 2)	[[1,2],[3,4],[5]]	尾段可不足 size
-chunk([1, 2], 10)	[[1, 2]]	size 大于长度时单段
-chunk([], 3)	[]	空数组，合法 size
-chunk([1], 0)	RangeError	size <= 0
-chunk([1], -1)	RangeError	负步长
-chunk([1], 1.5)	RangeError	非整数
-chunk([1], NaN)	TypeError	类型校验先于取值校验
-chunk('abc', 2)	TypeError	arr 必须是数组
-chunk([], 0)	RangeError	空数组不跳过 size 校验
-4. 异常总表
-添加到对话
-放大
-下载
-触发条件	涉及函数	异常类型
-参数不是 number 或为 NaN	clamp / chunk	TypeError
-clamp 中 lo > hi	clamp	RangeError
-arr 不是数组	chunk	TypeError
-size 为 0 / 负数 / 小数 / Infinity	chunk	RangeError
-任意非法入参	isBlank	不抛错，返回 true
-5. 最小回归集合
+返回 `number` 类型，取值一定落在下界与上界之间。
+当 `lo` 与 `hi` 顺序相反时，函数会先把两者排序再参与计算，
+因此 `clamp(5, 10, 0)` 的结果仍然是 `5`。
 
-改动实现时建议保留三类断言：clamp 的端点 / lo > hi / NaN；isBlank 的 Unicode 空白 / 零宽字符 / null / '0'；chunk 的奇数长度 / 空数组 / size = 0, -1, 1.5, NaN, Infinity / 非数组入参 / 源数组不变。
+### 边界情况
 
-6. 与实现的对应关系
+- `clamp(150, 0, 100)` 返回 `100`，即上界本身。
+- `clamp(-5, 0, 100)` 返回 `0`，即下界本身。
+- `clamp(50, 0, 100)` 返回 `50`，值在区间内时原样返回。
+- `clamp(NaN, 1, 10)` 返回 `1`，`NaN` 会被替换成下界。
+- 三个参数中任意一个不是 `number` 时，函数会抛出 `TypeError`。
 
-关键判定分别落在：clamp 的 assertNumber 与 lo > hi 分支、常量 BLANK_RE 与 isBlank 的 typeof 分支、内部函数 assertChunkSize、以及 chunk 循环里的 arr.slice(start, start + size)。
+### 使用示例
 
-查看所有产物 (2)
+```js
+// 进度条：把百分比限制在 0 到 100 之间
+const progress = clamp(120, 0, 100); // 100
+
+// 音量：把用户拖动得到的值限制到合法范围
+const volume = clamp(-3, 0, 100); // 0
+
+// 上下界传反：内部会先排序，结果依然正确
+const reversed = clamp(5, 10, 0); // 5
+```
+
+值得注意的是，`clamp` 不会修改调用方传入的变量，
+返回值需要由调用方自行接收，这一点与常见的原地修改风格不同。
+
+## isBlank
+
+`isBlank(s)` 用于判断一个值是否属于「空白」内容，
+常见于表单校验、配置项兜底和字符串清洗等场景。
+
+### 参数说明
+
+只有一个参数 `s`，类型为任意值。传入 `null` 与 `undefined` 都算空白。
+传入其他类型时会先转换成字符串，再按字符串规则判断。
+
+### 返回值
+
+返回 `boolean`。内容为空或仅由空白字符组成时返回 `true`，其余情况返回 `false`。
+
+### 边界情况
+
+- `isBlank('')` 返回 `true`，空字符串被视为空白。
+- `isBlank(null)` 返回 `true`，`null` 被视为空白。
+- `isBlank('   ')` 返回 `true`，全角空格也会被识别。
+- `isBlank('0')` 返回 `false`，字符串 `'0'` 不是空白。
+- 数字 `0` 会被转换成 `'0'`，因此同样返回 `false`。
+
+### 使用示例
+
+```js
+// 表单校验：用户名不允许为空或全空白
+if (isBlank(form.username)) {
+  throw new Error('用户名不能为空');
+}
+
+// 兜底文案：标题缺失时使用默认值
+const title = isBlank(input.title) ? '未命名' : input.title;
+```
+
+如果把 `isBlank` 的结果用于分支判断，建议先用 `String` 统一类型，
+避免出现布尔值与对象混用导致的意外分支。
+
+## chunk
+
+`chunk(arr, size)` 用于把数组按固定长度切分成若干子数组，
+适合分页请求、批量提交这类需要「分批」处理的场景。
+
+### 参数说明
+
+两个参数：`arr` 必须是数组，`size` 表示每块的最大长度。
+`size` 会先经 `Math.floor` 取整，再通过 `clamp` 收敛为不小于 `1` 的整数，
+因此传入小数或负数都不会产生死循环。
+
+### 返回值
+
+返回二维数组，内部元素保持原有顺序，最后一块可能不足 `size` 个元素。
+原数组不会被原地修改，切分结果全部是新的数组对象。
+
+### 边界情况
+
+- `chunk([1, 2, 3, 4, 5], 2)` 返回 `[[1, 2], [3, 4], [5]]`。
+- `chunk([], 3)` 返回空数组 `[]`。
+- `size` 传 `0` 或负数时会被收敛为 `1`，等价于逐元素切分。
+- `arr` 不是数组时，函数会抛出 `TypeError`，并提示期望的类型。
+
+### 使用示例
+
+```js
+const ids = [1, 2, 3, 4, 5, 6, 7];
+const batches = chunk(ids, 3);
+// [[1, 2, 3], [4, 5, 6], [7]]
+
+for (const batch of batches) {
+  await submitBatch(batch);
+}
+```
+
+最后一块通常不足 `size` 个元素，提交前如果需要对齐长度，
+可以在业务侧自行补齐，`chunk` 不会替调用方做这件事。
+
+## 组合示例
+
+下面给出一个把三个函数串起来的小例子：清洗输入、限制数量、分批处理。
+
+```js
+export function normalize(items) {
+  const cleaned = items.filter((item) => !isBlank(item.name));
+  const limited = cleaned.slice(0, 100);
+
+  return chunk(limited, 10).map((block) => ({
+    count: clamp(block.length, 0, 10),
+    rows: block,
+  }));
+}
+```
+
+这个例子里 `isBlank` 负责过滤脏数据，`chunk` 负责分批，
+`clamp` 只是把每块的长度做了兜底，三个函数的职责边界很清晰。
+
+## 边界行为
+
+这一节汇总三个函数在异常输入、极端取值上的一致性约定。
+
+### 类型校验
+
+三个函数都会在使用前做类型检查，失败时抛出 `TypeError`，
+错误消息统一由模块内部的模板字符串生成，格式为「参数 X 期望 Y，实际收到 Z」。
+这样调用方在日志里能直接看到是哪个参数出的问题。
+
+### 空值与极端值
+
+`isBlank` 对空值返回 `true`，而 `clamp` 与 `chunk` 遇到非法类型会直接抛错，
+两类处理方式刻意保持不同：前者用于判断，后者用于计算。
+`chunk` 的内部步长由 `clamp` 兜底，因此不会出现步长为 `0` 的无限循环。
+
+### 与业务代码的配合
+
+建议在表单提交前统一调用 `isBlank` 清洗文本，
+在渲染进度条时用 `clamp` 限制百分比，
+在批量接口中把待提交列表交给 `chunk` 切块，三者组合基本覆盖日常的输入治理需求。
+
+### 性能提示
+
+三个函数都是线性复杂度：`clamp` 与 `isBlank` 为常数时间，
+`chunk` 的时间复杂度与数组长度成正比。单次切分不会复制原数组之外的数据，
+在千级元素的批次上开销可以忽略。
+
+## 常见问题
+
+使用过程中最常见的问题集中在下面三处：
+
+- 传入字符串数字：`clamp('10', 0, 100)` 会抛出 `TypeError`，请先转成数值。
+- 期望原地修改：`clamp` 与 `chunk` 都返回新值，不会改动调用方的入参。
+- 误以为 `isBlank(0)` 返回 `true`：数字 `0` 不是空白，只有空串与纯空白串才是。
+
+如果需要更严格的校验，建议在调用前自行断言参数类型，
+并在测试中覆盖 `NaN`、空数组与负数步长这三类极端输入。
