@@ -1,0 +1,99 @@
+{
+  "schema": "orch-eval-baseline/v1",
+  "generatedAt": "2026-11-14T18:32:39.442Z",
+  "note": "每题的 ok 取 rows[].checks 里是否存在 ok===false（rows[].ok 字段是 undefined，别用它判成败）。trae 的样本只有 4 题：2026-11-15 02:17 跑 8 题时整体超时（15 分钟未完成），未产生结果文件。",
+  "agents": {
+    "codebuddy": {
+      "source": "20261115-021706-codebuddy.json",
+      "ranAt": "20261115-021706",
+      "total": 8,
+      "pass": 7,
+      "rate": 0.875,
+      "avgMs": 57219,
+      "tasks": {
+        "py-top-lnk": {
+          "pass": true,
+          "ms": 54071,
+          "chars": 1031,
+          "error": null
+        },
+        "py-dedup-keep-order": {
+          "pass": true,
+          "ms": 56298,
+          "chars": 1075,
+          "error": null
+        },
+        "py-retry-decorator": {
+          "pass": true,
+          "ms": 32607,
+          "chars": 1052,
+          "error": null
+        },
+        "py-csv-dict": {
+          "pass": true,
+          "ms": 138870,
+          "chars": 1013,
+          "error": null
+        },
+        "py-bisect-insort": {
+          "pass": true,
+          "ms": 32239,
+          "chars": 769,
+          "error": null
+        },
+        "js-clamp": {
+          "pass": true,
+          "ms": 63374,
+          "chars": 505,
+          "error": null
+        },
+        "js-debounce": {
+          "pass": true,
+          "ms": 18065,
+          "chars": 622,
+          "error": null
+        },
+        "py-log-group": {
+          "pass": false,
+          "ms": 62228,
+          "chars": 22,
+          "error": null
+        }
+      }
+    },
+    "trae": {
+      "source": "20261114-212803-trae.json",
+      "ranAt": "20261114-212803",
+      "total": 4,
+      "pass": 3,
+      "rate": 0.75,
+      "avgMs": 19957,
+      "tasks": {
+        "py-top-lnk": {
+          "pass": true,
+          "ms": 18787,
+          "chars": 580,
+          "error": null
+        },
+        "py-dedup-keep-order": {
+          "pass": true,
+          "ms": 22537,
+          "chars": 504,
+          "error": null
+        },
+        "py-retry-decorator": {
+          "pass": true,
+          "ms": 18523,
+          "chars": 582,
+          "error": null
+        },
+        "py-csv-dict": {
+          "pass": false,
+          "ms": 19980,
+          "chars": 617,
+          "error": null
+        }
+      }
+    }
+  }
+}
