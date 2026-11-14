@@ -2,3 +2,7 @@
 - agent: codebuddy · 结果: 待审阅（提案成型）
 - 文件: test/store_history.mjs
 - 测试: selftest=ok lockpool=ok batch_offline=ok ui_smoke=ok eval_selftest=ok
+## 2026-11-14 18:07 · 把 buildBrief 的结尾改一句话
+- agent: codebuddy · 结果: 待审阅（提案成型）
+- 文件: lib/subagent.mjs
+- 测试: selftest=ok lockpool=ok batch_offline=ok ui_smoke=ok store_history=ok self_parse=ok eval_selftest=ok
