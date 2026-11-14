@@ -192,14 +192,19 @@ if (!task) { say('缺少任务描述'); process.exit(2); }
 
 say('[1/6] 提案分支');
 let prId = null;
-const started = run(['pr.mjs', 'start', task.slice(0, 50)]);
-if (started.code === 0) {
-  const hit = /(PR-\d{8}-\d{3})/.exec(started.out);
-  prId = hit ? hit[1] : null;
-  say('  ' + (prId || '已开分支（未解析出提案号）'));
+if (!apply) {
+  // 干跑不碰 git：既不开分支、也不建提案（否则每试一次就留一条空提案 + 一个分支）
+  say('  干跑模式，跳过开分支（加 --apply 才会真开）');
 } else {
-  say('  开分支失败：' + started.out.trim().split('\n').slice(-1)[0]);
-  if (apply) process.exit(1);
+  const started = run(['pr.mjs', 'start', task.slice(0, 50)]);
+  if (started.code === 0) {
+    const hit = /(PR-\d{8}-\d{3})/.exec(started.out);
+    prId = hit ? hit[1] : null;
+    say('  ' + (prId || '已开分支（未解析出提案号）'));
+  } else {
+    say('  开分支失败：' + started.out.trim().split('\n').slice(-1)[0]);
+    process.exit(1);
+  }
 }
 
 say('[2/6] 交给 ' + agent + ' 出方案');
