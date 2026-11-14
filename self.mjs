@@ -68,17 +68,41 @@ function buildPrompt(task) {
 
 /** 从回答里抽 [{ file, content }] */
 function extractFiles(text) {
+  const ALLOWED = /\.(mjs|js|json|md|txt)$/i;
   const out = [];
+  const seen = new Set();
+  const push = (file, content) => {
+    const f = String(file || '').trim().replace(/^["'`]|["'`]$/g, '').replace(/^\.\//, '').replace(/\\/g, '/');
+    if (!f || !ALLOWED.test(f) || seen.has(f)) return;
+    seen.add(f);
+    out.push({ file: f, content: String(content || '').replace(/\r\n/g, '\n') });
+  };
+  const body = String(text || '');
+
+  // 第一优先：围栏首行写 `FILE: path`（或 `// FILE: path` / `# FILE: path`）
   const fence = /```[a-zA-Z]*\r?\n([\s\S]*?)```/g;
   let m;
-  while ((m = fence.exec(String(text || ''))) !== null) {
-    const body = m[1];
-    const first = body.split(/\r?\n/)[0].trim();
-    const hit = /^\/\/\s*FILE:\s*(.+)$/.exec(first) || /^#\s*FILE:\s*(.+)$/.exec(first);
-    if (!hit) continue;
-    const file = hit[1].trim().replace(/^["'`]|["'`]$/g, '');
-    const content = body.split(/\r?\n/).slice(1).join('\n');
-    out.push({ file, content });
+  const leftovers = [];
+  while ((m = fence.exec(body)) !== null) {
+    const inner = m[1];
+    const lines = inner.split(/\r?\n/);
+    const first = (lines[0] || '').trim();
+    const hit = /^(?:\/\/|#|\/\*)?\s*FILE:\s*(.+?)\s*(?:\*\/)?$/i.exec(first);
+    if (hit) { push(hit[1], lines.slice(1).join('\n')); continue; }
+    // 第二优先：首行是「看着像路径」的注释，例如 `// test/store_history.mjs`
+    const cmt = /^(?:\/\/|#|\/\*|<!--)\s*([A-Za-z0-9_./\\-]+\.(?:mjs|js|json|md|txt))\b/i.exec(first);
+    if (cmt) { push(cmt[1], lines.slice(1).join('\n')); continue; }
+    leftovers.push({ inner, start: m.index, lines });
+  }
+
+  // 第三优先：围栏前面最近一条「像路径」的标题行（`### test/x.mjs` / `**test/x.mjs**` / 裸路径行）
+  for (const lf of leftovers) {
+    const before = body.slice(Math.max(0, lf.start - 400), lf.start);
+    const cands = [...before.matchAll(/([A-Za-z0-9_./\\-]+\.(?:mjs|js|json|md|txt))/gi)].map(x => x[1]);
+    if (cands.length) { push(cands[cands.length - 1], lf.inner); continue; }
+    // 第四优先：整段回答里只有这一个围栏 → 用文件名线索兜底
+    const name = /(?:^|\n)\s*(?:创建|新增|改成|edit|add)\s*([A-Za-z0-9_./\\-]+\.(?:mjs|js|json|md|txt))/i.exec(body);
+    if (name) push(name[1], lf.inner);
   }
   return out;
 }
@@ -166,8 +190,15 @@ if (!answer.trim()) { say('  没拿到回答'); process.exit(1); }
 say('[3/6] 抽文件');
 const files = extractFiles(answer);
 if (!files.length) {
-  say('  回答里没有 FILE: 标记的围栏 —— 让 agent 按格式重出，或手工改');
+  say('  抽不出文件围栏 —— 原始回答已存 memory/self-answers/ 供排查');
   say('  回答前 300 字：' + JSON.stringify(answer.slice(0, 300)));
+  try {
+    const dir = path.join(ROOT, 'memory', 'self-answers');
+    fs.mkdirSync(dir, { recursive: true });
+    const f = path.join(dir, (prId || 'no-pr') + '.md');
+    fs.writeFileSync(f, answer, 'utf8');
+    say('  已存 ' + path.relative(ROOT, f) + '（' + answer.length + ' 字符）');
+  } catch { }
   if (prId) run(['pr.mjs', 'reject', prId, '没有可应用的文件']);
   process.exit(1);
 }
