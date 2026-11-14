@@ -160,7 +160,34 @@ if (argv[0] === '--list') {
 const apply = argv.includes('--apply');
 const ai = argv.indexOf('--agent');
 const agent = ai >= 0 ? argv[ai + 1] : 'codebuddy';
-const task = argv.filter((a, i) => !a.startsWith('--') && (ai < 0 || i !== ai + 1)).join(' ').trim();
+
+// --pick [N]：不口述任务，从 collab/SHARED.md 的「待办」里自己挑一条（N 从 1 起，默认第 1 条未完成）
+function pickTodo(nth = 1) {
+  const f = path.join(ROOT, 'collab', 'SHARED.md');
+  if (!fs.existsSync(f)) return null;
+  const lines = fs.readFileSync(f, 'utf8').split(/\r?\n/);
+  const start = lines.findIndex(l => /^##\s*\d+\s*待办/.test(l));
+  const scope = start >= 0 ? lines.slice(start + 1) : lines;
+  const items = [];
+  for (const l of scope) {
+    if (/^##\s/.test(l)) break;
+    const m = /^\s*-\s*\[\s*\]\s*(.+?)\s*$/.exec(l);
+    if (m) items.push(m[1].replace(/[（(][^）)]*[）)]\s*$/, '').trim());
+  }
+  return items[nth - 1] || null;
+}
+const pi = argv.indexOf('--pick');
+let task = '';
+if (pi >= 0) {
+  const nth = parseInt(argv[pi + 1], 10);
+  const want = Number.isFinite(nth) ? nth : 1;
+  const picked = pickTodo(want);
+  if (!picked) { say('--pick 没在 SHARED.md 的待办里找到第 ' + want + ' 条'); process.exit(1); }
+  task = picked;
+  say('[pick] 从 collab/SHARED.md 待办里选中第 ' + want + ' 条：' + task);
+} else {
+  task = argv.filter((a, i) => !a.startsWith('--') && (ai < 0 || i !== ai + 1)).join(' ').trim();
+}
 if (!task) { say('缺少任务描述'); process.exit(2); }
 
 say('[1/6] 提案分支');
