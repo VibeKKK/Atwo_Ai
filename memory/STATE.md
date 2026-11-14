@@ -34,6 +34,19 @@
 - 派活选择规则：快活/试错给 trae，要能直接落盘的干净代码给 codebuddy
 - PowerShell 5.1 按 ANSI 读 .ps1，脚本必须全 ASCII；pwsh 不在系统 PATH
 - ops_bash 里 COLLAB_ME=dsh-work-replace 前缀可覆盖协同身份
+- **DOM 抓取是 trae / workbuddy 的共同病根**：回答区是渲染后的 DOM，`x`→<code>、##→<h2>、**b**→<strong>，innerText 只剩文字、语法字符全丢。trae 掉星号、workbuddy 掉反引号和井号不是两个 bug，是同一个病。给每条通道写字符还原补丁等于永久打地鼠。
+- **解法：文件信箱**。让 agent 把产物写进文件，我们读文件 —— 渲染器不在链路上，字节零损伤。实测：trae 14.4s / 豆包 19.8s，反引号 ## ** JSDoc 边界表格竖线全部原样；对比 trae 抓 DOM 23s 掉星号、workbuddy 抓 DOM 343s 全丢。
+- 邮箱协议（两条通道一致）：写 `.mailbox/<id>.task.md` → CDP 只发一句含两个绝对路径的短指令（「读完写进 Y，只回复完成」）→ 每 1.5s 轮询 `.result.md` → 非空即返回。
+- 工作区（2026-11-14 用户指定）：trae = `D:\code app\ai code\Trae CN\workplace\work one`；豆包 = `D:\ai work replace\doubao place\work test one`（旧的 `doubao\workplace\work one` 已删）。
+- **三条 GUI 通道全部信箱化完成（实测）**：trae `askTraeFile` 14.4s / 豆包 `askDoubao` 19.8s / workbuddy `askFile` 23.5–43.6s，反引号 ## ** 表格竖线 JSDoc 边界全部逐字正确。DOM 抓取路线（trae 23s 掉星号、workbuddy 343s 全丢）正式退役，只在「问一句话、不要产物」时用。
+- **信箱已接进 swarm 主流程（2026-11-14 实测通过）**：`lib/swarm.mjs` 里 `MAILBOX_AGENTS = {trae, workbuddy, doubao}` + `askViaMailbox()`，`runPool` 用包了一层 `dispatch()`，只要带 `--land` 或 `--verify` 就走文件信箱；只要文字时仍走 DOM（更快、无文件开销）。信箱挂了自动退回原路，不是单点。实测：`dispatchFn` 故意抛「不应该走到这里」没触发 → 信箱确实接管；38.5s，输出含反引号 /**加粗** /## 全保留，`verify.ok=true` 零失败。
+- **提案系统缺陷（2026-11-14 发现，未修）**：7 个 open PR 全部 `(无 diff)`，且 `git branch` 里查不到任何 `orch/pr-*` 分支。根因是 `pr.mjs` 的 `finish()` 从未被调用 —— `ORCH_PR=1` 自动 start+finish 依赖派活成功，派活失败（如 codebuddy 退出码 143）就没有收尾，提案永久卡在 `open`。`finish()` 本身有 `status = pr.files.length ? 'ready' : 'empty'` 的保护，但没人调它。修法要动 `pr.mjs`（protected，需 rank1）。
+- `reject()` 没有审阅门禁（只有 `approve()` 有），所以清理空提案可以直接 `pr.mjs reject <id> --reason`；`reject` 会切回 main、删分支、标记 rejected。
+- 三个适配器现在都有信箱导出：`agents/trae.mjs` 的 `askTraeFile`、`agents/workbuddy.mjs` 的 `askFile`、`agents/doubao.mjs` 的 `askDoubao`（本身就是信箱）。工作区环境变量：`TRAE_WORKSPACE` / `WB_WORKSPACE` / `DB_WORKSPACE`。
+- 工作区一览（用户 2026-11-14 指定）：trae `D:\ai work replace\trae place\work test one`；豆包 `D:\ai work replace\doubao place\work test one`；workbuddy `D:\ai work replace\workbuddy place\work test one`；codebuddy 走 CLI 直接落盘，不需要信箱。
+- **共享工作区 `D:\ai work replace\TDW place`**（用户 2026-11-14 指定）：三条通道的公共落地目录，跨通道协作或特殊需求时用。三个适配器都支持 `opts.shared = true` 走它，也可用 `opts.workspace` 显式指定任意路径；环境变量 `ORCH_SHARED_WS` 可覆盖。不传 shared 时各自用自己的私有工作区。
+- WorkBuddy 5.11.3 只认环境变量 `WORKBUDDY_REMOTE_DEBUGGING_PORT`，命令行 `--remote-debugging-port` 会被丢弃。
+- 豆包客户端 CDP 端口 9225，主聊天页 target 是 `doubao://doubao-chat/chat`，输入框是 `div.tiptap.ProseMirror`（tiptap，不是 Slate），发送用 Input.insertText + Enter(VK 13)。
 
 ## 本轮不做（已评估、明确放弃）
 - Codex CLI：app-server 拒绝访问 (os error 5) + 无 auth + 三库损坏，性价比低于 Trae

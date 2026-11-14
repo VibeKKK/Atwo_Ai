@@ -1,154 +1,171 @@
-// 豆包（火山方舟 / Volcengine Ark）适配层：纯 HTTP API，零浏览器、零 DOM 抓取。
+// 豆包客户端适配层：CDP 发指令 + 文件信箱收产物。
 //
-// 为什么这条通道比 trae / workbuddy 干净：
-//  1) 没有 DOM，就不存在「抓到上一轮残留」的回合隔离问题 —— trae 现在最大的坑
-//     （elapsedMs=329ms，回答其实是页面上的旧内容）在这里从根上消失。
-//  2) 没有 markdown 渲染，就不存在 ** 被当 bold 吃掉、JSDoc 开头变单个斜杠的损伤。
-//  3) 返回是结构化 JSON，input/output tokens 直接可读，不用从界面文案里数字。
-//  4) 不需要 GUI 常驻，可在无头环境并发跑。
+// 为什么这条通道和 trae / codebuddy / workbuddy 本质不同：
+//   那三条靠 innerText 从聊天气泡里抓回答，而聊天气泡是 markdown 渲染后的结果，
+//   反引号、井号、双星号这些语法字符在渲染时就被吃掉了（实测：workbuddy 生成的
+//   lib/probe_clamp.mjs 第 45 行反引号全丢、docs/probe-guide.md 反引号数 0、## 数 0）。
+//   豆包客户端有本地 shell 执行能力（实测它能跑 Get-Location / Test-Path / Set-Content），
+//   所以产物可以走文件系统回传 —— 文件不经过任何渲染器，字节原样。
 //
-// 唯一前提：ARK_API_KEY。没有就抛错，绝不静默降级返回空串。
+// 协议：
+//   1) 把 prompt 写成 .mailbox/<id>.task.md
+//   2) 通过 CDP 在输入框发一句极短的指令，只包含两个绝对路径
+//   3) 轮询 .mailbox/<id>.result.md 出现
+//   4) 读文件，字节原样返回
 //
 // 环境变量：
-//   ARK_API_KEY    必填，火山方舟控制台的 API Key
-//   ARK_MODEL      模型或推理接入点 ID，默认 doubao-seed-1-6-250615
-//   ARK_BASE       默认 https://ark.cn-beijing.volces.com/api/v3
-//   ARK_TIMEOUT_MS 默认 180000
+//   DB_PORT        调试端口，默认 9225（启动时必须带 --remote-debugging-port=9225）
+//   DB_WORKSPACE   文件信箱根目录，默认 D:\\ai work replace\\doubao place\\work test one
+//                  （2026-11-14 用户换区：原先的 D:\\code app\\ai code\\doubao\\workplace\\work one 已删除）
+//   DB_TIMEOUT_MS  单次任务超时，默认 300000（豆包一次任务实测 7-60 秒，留足余量）
+import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
 import { withLockPool } from '../lib/lock.mjs';
 import { check, record } from '../lib/budget.mjs';
 import { appendLog } from '../lib/memory.mjs';
+import { CDP } from '../lib/cdp.mjs';
 
-const BASE = process.env.ARK_BASE || 'https://ark.cn-beijing.volces.com/api/v3';
-const MODEL = process.env.ARK_MODEL || 'doubao-seed-1-6-250615';
-const TIMEOUT_MS = Number(process.env.ARK_TIMEOUT_MS || 180000);
 const NAME = 'doubao';
+const PORT = Number(process.env.DB_PORT || 9225);
+const WORKSPACE = process.env.DB_WORKSPACE || 'D:\\ai work replace\\doubao place\\work test one';
+// 三通道共享工作区：opts.shared=true 走这里，用于跨通道协作/特殊需求
+const SHARED_WS = process.env.ORCH_SHARED_WS || 'D:\\ai work replace\\TDW place';
+const BOX = join(WORKSPACE, '.mailbox');
+const TIMEOUT_MS = Number(process.env.DB_TIMEOUT_MS || 300000);
 
-function apiKey() {
-  const k = process.env.ARK_API_KEY;
-  if (!k) {
-    throw new Error(
-      '缺 ARK_API_KEY：豆包走火山方舟 HTTP API，需要控制台的 API Key。\n' +
-      '  临时：set ARK_API_KEY=xxx\n' +
-      '  永久：在 config.local.json 里加 "arkApiKey"（也可写进用户环境变量）',
-    );
-  }
-  return k;
+async function attachPage() {
+  const list = await (await fetch('http://127.0.0.1:' + PORT + '/json/list', {
+    headers: { Host: 'localhost:' + PORT },
+  })).json();
+  const t = list.find(x => x.type === 'page' && /doubao-chat/.test(x.url));
+  if (!t) throw new Error('豆包客户端未就绪：' + PORT + ' 上找不到 doubao-chat 页面。' +
+    '启动方式：Doubao.exe --remote-debugging-port=' + PORT);
+  return new CDP(t.webSocketDebuggerUrl).connect();
 }
 
+/** 在输入框里打字并回车 */
+async function sendPrompt(c, text) {
+  const box = JSON.parse(await c.js(`(() => {
+    const ed = document.querySelector('div.tiptap.ProseMirror');
+    if (!ed) return 'null';
+    ed.focus();
+    const b = ed.getBoundingClientRect();
+    return JSON.stringify({ x: Math.round(b.x + b.width/2), y: Math.round(b.y + b.height/2) });
+  })()`) || 'null');
+  if (!box) throw new Error('找不到豆包输入框（tiptap ProseMirror），界面结构可能变了');
+  await c.call('Input.dispatchMouseEvent', { type: 'mousePressed', x: box.x, y: box.y, button: 'left', clickCount: 1 });
+  await c.call('Input.dispatchMouseEvent', { type: 'mouseReleased', x: box.x, y: box.y, button: 'left', clickCount: 1 });
+  await new Promise(r => setTimeout(r, 250));
+  await c.call('Input.insertText', { text });
+  await new Promise(r => setTimeout(r, 600));
+  const got = String(await c.js(`(document.querySelector('div.tiptap.ProseMirror')||{}).innerText || ''`));
+  if (got.replace(/\s/g, '').length < Math.min(6, text.replace(/\s/g, '').length)) {
+    throw new Error('输入没落住（编辑器里只有 ' + got.length + ' 字符）');
+  }
+  await c.call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+  await c.call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
 /**
- * 问豆包一次。
- * @param {string} prompt 提示词
- * @param {object} opts { system, temperature, maxTokens, json }
+ * 走文件信箱问豆包一次。产物字节原样，不经过任何 markdown 渲染。
+ * @param {string} prompt 任务正文，会原样落成 task.md
+ * @param {object} opts { ext, timeoutMs, id }
  * @returns {{answer:string, code:string, notes:string[], confidence:string,
- *            raw:string, ms:number, inputTokens:number, outputTokens:number}}
+ *            raw:string, ms:number, inputTokens:number, outputTokens:number, file:string}}
  */
 export async function askDoubao(prompt, opts = {}) {
   const text = String(prompt || '').trim();
   if (!text) throw new Error('prompt 为空');
 
-  return withLockPool(NAME, Number(opts.slots || process.env.ARK_SLOTS || 2), async () => {
+  // opts.shared=true 走三通道共享区；opts.workspace 可显式指定
+  const wsRoot = opts.workspace || (opts.shared ? SHARED_WS : null) || WORKSPACE;
+  const box = opts.workspace || opts.shared ? join(wsRoot, '.mailbox') : BOX;
+
+  return withLockPool(NAME, Number(opts.slots || 1), async () => {
     check(NAME, Math.ceil(text.length / 2));
+    mkdirSync(box, { recursive: true });
 
-    const key = apiKey();
+    const id = opts.id || ('t' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6));
+    const taskPath = join(box, id + '.task.md');
+    const resultPath = join(box, id + '.result.md');
+    const timeoutMs = Number(opts.timeoutMs || TIMEOUT_MS);
+
+    // task.md 里包一层收尾约定，让豆包知道产物写哪
+    const wrapped = text + '\n\n---\n' +
+      '完成上面的任务后，把最终产物原样写入下面这个文件的完整内容里（不要摘要、不要省略、不要加解释）：\n' +
+      resultPath + '\n' +
+      '写完后只回复两个字：完成';
+    writeFileSync(taskPath, wrapped, 'utf8');
+    if (existsSync(resultPath)) rmSync(resultPath, { force: true });
+
     const t0 = Date.now();
-    const body = {
-      model: opts.model || MODEL,
-      messages: [
-        ...(opts.system ? [{ role: 'system', content: String(opts.system) }] : []),
-        { role: 'user', content: text },
-      ],
-      temperature: opts.temperature ?? 0.3,
-    };
-    if (opts.maxTokens) body.max_tokens = Number(opts.maxTokens);
-    if (opts.json) body.response_format = { type: 'json_object' };
-
-    const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(), TIMEOUT_MS);
-    let resp;
+    let c = null;
     try {
-      resp = await fetch(BASE + '/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
-        body: JSON.stringify(body),
-        signal: ac.signal,
-      });
-    } catch (err) {
-      clearTimeout(timer);
-      const ms = Date.now() - t0;
-      appendLog({ agent: NAME, ms, ok: false, err: String(err && err.message || err), promptChars: text.length });
-      if (err && err.name === 'AbortError') throw new Error('豆包请求超时 ' + TIMEOUT_MS + 'ms');
-      throw new Error('豆包请求失败：' + (err && err.message || err));
-    }
-    clearTimeout(timer);
+      c = await attachPage();
+      const instruct = '读取 ' + taskPath + ' 里的任务并执行，产物写入 ' + resultPath + '。只回复「完成」两个字。';
+      await sendPrompt(c, instruct);
 
-    const ms = Date.now() - t0;
-    const rawBody = await resp.text();
-    if (!resp.ok) {
-      appendLog({ agent: NAME, ms, ok: false, status: resp.status, err: rawBody.slice(0, 300) });
-      throw new Error('豆包 HTTP ' + resp.status + '：' + rawBody.slice(0, 500));
-    }
-
-    let data;
-    try { data = JSON.parse(rawBody); } catch (err) {
-      appendLog({ agent: NAME, ms, ok: false, err: 'JSON 解析失败' });
-      throw new Error('豆包返回不是合法 JSON：' + rawBody.slice(0, 300));
-    }
-
-    const choice = (data.choices && data.choices[0]) || null;
-    const content = choice && choice.message && typeof choice.message.content === 'string'
-      ? choice.message.content
-      : '';
-    if (!content.trim()) {
-      appendLog({ agent: NAME, ms, ok: false, err: '空回答', finish: choice && choice.finish_reason });
-      throw new Error('豆包返回空回答（finish_reason=' + (choice && choice.finish_reason) + '）');
-    }
-
-    const u = data.usage || {};
-    const inputTokens = Number(u.prompt_tokens || 0);
-    const outputTokens = Number(u.completion_tokens || 0);
-
-    record(NAME, { input: inputTokens, output: outputTokens, ok: true });
-    appendLog({ agent: NAME, ms, ok: true, promptChars: text.length, inputTokens, outputTokens, model: body.model });
-
-    // 契约任务让上游自己给结构化 JSON；这里只做宽松拆解，不擅自判失败。
-    let answer = content.trim();
-    let code = '';
-    let notes = [];
-    let confidence = '';
-    const fenced = answer.match(/```[a-zA-Z0-9_+-]*\s*\n([\s\S]*?)```/);
-    if (fenced) code = fenced[1].replace(/^\s*\n/, '').replace(/\s*$/, '');
-    try {
-      const j = JSON.parse(answer);
-      if (j && typeof j === 'object') {
-        if (typeof j.code === 'string') code = j.code;
-        answer = String(j.answer ?? j.summary ?? j.title ?? '').trim() || (code ? '' : answer);
-        if (Array.isArray(j.notes)) notes = j.notes.map(String);
-        if (j.confidence != null) confidence = String(j.confidence);
+      // 轮询结果文件
+      let waited = 0;
+      const step = 1500;
+      while (waited < timeoutMs) {
+        await sleep(step);
+        waited += step;
+        if (existsSync(resultPath)) {
+          // 再等一拍，防止文件还在写
+          await sleep(600);
+          const content = readFileSync(resultPath, 'utf8');
+          if (content.trim()) {
+            const ms = Date.now() - t0;
+            record(NAME, { input: Math.ceil(text.length / 2), output: Math.ceil(content.length / 2), ok: true });
+            appendLog({ agent: NAME, ms, ok: true, mode: 'file', taskChars: text.length, resultChars: content.length, id });
+            const code = opts.ext && /\.(mjs|js|cjs|ts|py|sh|ps1)$/.test(opts.ext) ? content : '';
+            return {
+              answer: code ? '' : content.trim(),
+              code,
+              notes: [],
+              confidence: '',
+              raw: content,
+              ms,
+              inputTokens: 0,
+              outputTokens: 0,
+              file: resultPath,
+            };
+          }
+        }
       }
-    } catch { /* 不是 JSON 就用原文 */ }
-
-    return { answer, code, notes, confidence, raw: content, ms, inputTokens, outputTokens };
+      throw new Error('等结果文件超时 ' + Math.round(timeoutMs / 1000) + 's（' + resultPath + '）');
+    } catch (err) {
+      const ms = Date.now() - t0;
+      appendLog({ agent: NAME, ms, ok: false, mode: 'file', err: String(err && err.message || err).slice(0, 200), id });
+      throw err;
+    } finally {
+      if (c) try { c.close(); } catch {}
+    }
   });
 }
 
-/** 供 orchestra doctor / stats 用的元信息 */
-export const doubaoMeta = {
-  name: NAME,
-  label: '豆包（火山方舟 API）',
-  kind: 'http',
-  model: MODEL,
-  base: BASE,
-  ready: () => Boolean(process.env.ARK_API_KEY),
-  reason: () => (process.env.ARK_API_KEY ? 'ARK_API_KEY 已设置' : '缺 ARK_API_KEY'),
-};
-
-/** doctor 用：探测 key 是否可用（发一次极小的请求） */
+/** doctor 用：能不能连上客户端 */
 export async function doubaoDoctor() {
-  if (!process.env.ARK_API_KEY) return { ok: false, detail: '缺 ARK_API_KEY' };
   try {
-    const r = await askDoubao('只回复两个字：在', { maxTokens: 16 });
-    return { ok: true, detail: '连通，回复 ' + JSON.stringify(r.answer.slice(0, 20)) + ' · ' + r.ms + 'ms' };
+    const list = await (await fetch('http://127.0.0.1:' + PORT + '/json/list', {
+      headers: { Host: 'localhost:' + PORT },
+    })).json();
+    const t = list.find(x => x.type === 'page' && /doubao-chat/.test(x.url));
+    if (!t) return { ok: false, detail: PORT + ' 可连但没有 doubao-chat 页面' };
+    return { ok: true, detail: PORT + ' 已连 · 工作区 ' + WORKSPACE };
   } catch (err) {
-    return { ok: false, detail: String(err.message || err).slice(0, 200) };
+    return { ok: false, detail: '连不上 ' + PORT + '：' + String(err.message || err).slice(0, 120) +
+      '（需带 --remote-debugging-port=' + PORT + ' 启动）' };
   }
 }
+
+export const doubaoMeta = {
+  name: NAME,
+  label: '豆包（客户端 + 文件信箱）',
+  kind: 'cdp-file',
+  port: PORT,
+  workspace: WORKSPACE,
+};

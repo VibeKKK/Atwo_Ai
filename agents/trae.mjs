@@ -4,10 +4,14 @@
 import { attach } from '../lib/cdp.mjs';
 import { spawn } from 'node:child_process';
 import net from 'node:net';
+import fs from 'node:fs';
+import path from 'node:path';
 
 const PORT = Number(process.env.TRAE_CDP_PORT || 9223);
 const SEL_EDIT = '[contenteditable="true"]';
 const TRAE_EXE = process.env.TRAE_EXE || 'D:\\code app\\ai code\\Trae CN\\Trae CN.exe';
+// 三通道共享工作区（2026-11-14 用户指定）：需要跨通道协作时传 opts.shared=true 就走这里
+const SHARED_WS = process.env.ORCH_SHARED_WS || 'D:\\ai work replace\\TDW place';
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -1026,6 +1030,60 @@ export async function peekTrae(opts = {}) {
   } finally {
     try { await c.close(); } catch { }
   }
+}
+
+/**
+ * Trae 文件信箱（2026-11-14 加）：产物走文件系统，绕开 markdown 渲染器。
+ *
+ * 为什么需要它：Trae 的回答区是渲染后的 DOM，`x` 会变成 <code>、## 会变成 <h2>、
+ * **b** 会变成 <strong>，innerText 取回来只剩文字，语法字符全丢。
+ * 之前 extractCode 里那些"字符还原"补丁都是在猜，永远追不上语法。
+ * 实测直接让 Trae 写文件，反引号 / ## / ** / JSDoc 边界一个字符都不少，而且 9.9 秒完成。
+ *
+ * 协议与 agents/doubao.mjs 一致：写 task → 只发一句含两个绝对路径的短指令 → 轮询 result。
+ */
+export async function askTraeFile(taskPrompt, opts = {}) {
+  if (!taskPrompt || !String(taskPrompt).trim()) throw new Error('taskPrompt 为空');
+  // 2026-11-14 用户换区：trae 的工作区统一到这里。
+  // opts.shared=true 时改用三通道共享区（跨通道协作/特殊需求时用）。
+  const ws = opts.workspace ||
+    (opts.shared ? SHARED_WS : null) ||
+    process.env.TRAE_WORKSPACE ||
+    'D:\\ai work replace\\trae place\\work test one';
+  const box = path.join(ws, '.mailbox');
+  fs.mkdirSync(box, { recursive: true });
+  const id = 'tr' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  const taskPath = path.join(box, id + '.task.md');
+  const resultPath = path.join(box, id + '.result.md');
+  fs.writeFileSync(taskPath, String(taskPrompt), 'utf8');
+
+  const ins = [
+    '请读取这个文件：' + taskPath,
+    '按文件里写的任务执行，把最终产物完整写入：' + resultPath,
+    '两个都是绝对路径，不要改写路径，不要在回复里粘贴产物。',
+    '写完后只回复「完成」两个字。',
+  ].join('\n');
+
+  const t0 = Date.now();
+  const r = await askTrae(ins, opts);
+
+  // askTrae 返回不等于文件已落盘：轮询到非空为止
+  const budget = opts.fileWaitMs ?? 60000;
+  const deadline = Date.now() + budget;
+  while (Date.now() < deadline) {
+    try {
+      const s = fs.readFileSync(resultPath, 'utf8');
+      if (s && s.trim()) {
+        return { ok: true, text: s, file: resultPath, elapsedMs: Date.now() - t0 };
+      }
+    } catch { /* 还没写 */ }
+    await sleep(1500);
+  }
+  return {
+    ok: false, text: '', file: null, elapsedMs: Date.now() - t0,
+    reason: '结果文件 ' + budget + 'ms 内没有出现（任务可能没执行完，或 Trae 没权限写该目录）',
+    reply: (r && (r.text || r.answer || '')) || '',
+  };
 }
 
 export const meta = {

@@ -11,6 +11,7 @@
 //  5) 回答在最后一个 .cr-agent 里，文本夹着 WorkBuddy/已完成 Xs/Hy4/时间 这些界面行。
 import http from 'node:http';
 import path from 'node:path';
+import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { config } from '../lib/config.mjs';
@@ -22,6 +23,13 @@ const WebSocket = require('ws');
 
 const PORT = Number(process.env.WB_PORT || 9224);
 const EXE = process.env.WB_EXE || config.workbuddyExe || 'D:\\code app\\ai code\\WorkBuddy\\WorkBuddy.exe';
+// 工作区（2026-11-14 用户指定）：产物写这里，走文件信箱而不是抓 DOM。
+// 原先没有这个配置项，所以 WorkBuddy 只能靠 innerText 取回答 —— 实测反引号和 ## 全被
+// markdown 渲染吃掉（343 秒还交回一个废产物）。文件通道绕开渲染器，字节原样。
+const WORKSPACE = process.env.WB_WORKSPACE || config.workbuddyWorkspace ||
+  'D:\\ai work replace\\workbuddy place\\work test one';
+// 三通道共享工作区：opts.shared=true 走这里，用于跨通道协作/特殊需求
+const SHARED_WS = process.env.ORCH_SHARED_WS || 'D:\\ai work replace\\TDW place';
 const SEL = {
   edit: ['div[data-slate-editor="true"][contenteditable="true"]', 'div[contenteditable="true"]'],
   send: ['button[aria-label="发送"]', 'button[aria-label="Send"]'],
@@ -230,6 +238,53 @@ export async function ask(prompt, { timeoutMs = 240000, settleMs = 3500 } = {}) 
   } finally {
     c.close();
   }
+}
+
+/**
+ * 文件信箱（2026-11-14 加）：产物走文件，绕开 markdown 渲染器。
+ *
+ * WorkBuddy 抓 DOM 的实测代价：反引号和 ## 全被渲染吃掉，343 秒还交回一个废产物
+ * （`return [Function ${value.name}];` —— 两个反引号不见，代码直接坏掉）。
+ * 让 WorkBuddy 自己写文件后，23.5 秒拿到逐字正确的产物，反引号/##/** 一个不少。
+ *
+ * 协议与 trae / 豆包一致：写 task → 只发一句含两个绝对路径的短指令 → 轮询 result。
+ */
+export async function askFile(taskPrompt, opts = {}) {
+  if (!taskPrompt || !String(taskPrompt).trim()) throw new Error('taskPrompt 为空');
+  const ws = opts.workspace || (opts.shared ? SHARED_WS : null) || WORKSPACE;
+  const box = path.join(ws, '.mailbox');
+  fs.mkdirSync(box, { recursive: true });
+  const id = 'wb' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  const taskPath = path.join(box, id + '.task.md');
+  const resultPath = path.join(box, id + '.result.md');
+  fs.writeFileSync(taskPath, String(taskPrompt), 'utf8');
+
+  const ins = [
+    '请读取这个文件：' + taskPath,
+    '按文件里写的任务执行，把最终产物完整写入：' + resultPath,
+    '两个都是绝对路径，不要改写路径，不要在回复里粘贴产物。',
+    '写完后只回复「完成」两个字。',
+  ].join('\n');
+
+  const t0 = Date.now();
+  const r = await ask(ins, opts);
+
+  const budget = opts.fileWaitMs ?? 60000;
+  const deadline = Date.now() + budget;
+  while (Date.now() < deadline) {
+    try {
+      const s = fs.readFileSync(resultPath, 'utf8');
+      if (s && s.trim()) {
+        return { ok: true, agent: 'workbuddy', text: s, raw: s, file: resultPath, ms: Date.now() - t0 };
+      }
+    } catch { /* 还没写 */ }
+    await new Promise(res => setTimeout(res, 1500));
+  }
+  return {
+    ok: false, agent: 'workbuddy', text: '', file: null, ms: Date.now() - t0,
+    reason: '结果文件 ' + budget + 'ms 内没有出现',
+    reply: (r && (r.text || r.raw || '')) || '',
+  };
 }
 
 export async function doctor() {
