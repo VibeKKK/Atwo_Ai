@@ -1,0 +1,274 @@
+{
+  "ts": "20261115-021706",
+  "agent": "codebuddy",
+  "total": 8,
+  "pass": 7,
+  "rate": 87.5,
+  "durationMs": 465379,
+  "avgMs": 57219,
+  "rows": [
+    {
+      "id": "py-top-lnk",
+      "agent": "codebuddy",
+      "pass": true,
+      "ms": 54071,
+      "err": null,
+      "checks": [
+        {
+          "name": "非空",
+          "ok": true,
+          "detail": "1031 字符"
+        },
+        {
+          "name": "编译",
+          "ok": true,
+          "detail": "python 通过"
+        },
+        {
+          "name": "必含#1",
+          "ok": true,
+          "detail": "def top_lnk"
+        },
+        {
+          "name": "禁含#1",
+          "ok": true,
+          "detail": "import pandas"
+        },
+        {
+          "name": "禁含#2",
+          "ok": true,
+          "detail": "import numpy"
+        },
+        {
+          "name": "行为",
+          "ok": true,
+          "detail": "UNIT-OK"
+        }
+      ],
+      "chars": 1031,
+      "text": "`top_lnk` 实现如下（只用 `os`）：\n\n```python\nimport os\n\n\ndef top_lnk(root, n):\n    \"\"\"递归查找 root 下所有 .lnk 文件，返回按大小降序排列的前 n 个 (size, path)。\"\"\"\n    if n <= 0:\n        return []\n\n    found = []\n    for dirpath, _, filenames in os.walk(root):\n        for name in filenames:\n            if name.lower().endswith('.lnk'):\n                path = os.path.join(dirpath, name)\n                try:\n                    size = os.path.getsize(path)   # 只取元数据，不读文件内容\n                except OSError:\n                    continue                       # 文件被删/无权限则跳过\n                found.append((size, path))\n\n    found.sort(key=lambda item: (-item[0], item[1]))  # 大小降序，路径升序保证确定性\n    return found[:n]\n```\n\n要点：\n- `os.walk` 默认递归且**不跟随目录符号链接**，避免死循环。\n- `.lnk` 用 `lower()` 做大小写不敏感匹配（Windows 场景）。\n- `getsize` 走 `stat`，不读内容，效率高；对消失/无权限文件做边界处理。\n- 排序用 `-size` 降序，并以路径作 tie-break；`n<=0` 直接返回空列表。\n\n---\n\n关于消息末尾那段「共享工作记忆」：它不是我记忆系统里的内容，且那段 Node.js 派活的指令被截断（「改成「只回…」不完整），结果又标记为失败。我没有据此去改任何文件——它既不是当前请求，也不可执行。如果确实想让我处理 `lib/subagent.mjs` 的 `buildBrief`，请把完整的目标文案给我，我再动手。"
+    },
+    {
+      "id": "py-dedup-keep-order",
+      "agent": "codebuddy",
+      "pass": true,
+      "ms": 56298,
+      "err": null,
+      "checks": [
+        {
+          "name": "非空",
+          "ok": true,
+          "detail": "1075 字符"
+        },
+        {
+          "name": "编译",
+          "ok": true,
+          "detail": "python 通过"
+        },
+        {
+          "name": "必含#1",
+          "ok": true,
+          "detail": "def dedup"
+        },
+        {
+          "name": "行为",
+          "ok": true,
+          "detail": "UNIT-OK"
+        }
+      ],
+      "chars": 1075,
+      "text": "```python\ndef dedup(items):\n    \"\"\"去重并保持首次出现顺序；元素可哈希或不可哈希（dict/list 等）均可。\"\"\"\n    result = []\n    seen_hashable = set()      # 可哈希元素走集合，O(1) 判重\n    seen_unhashable = []       # 不可哈希元素用 == 逐一比较\n    for item in items:\n        try:\n            hash(item)\n        except TypeError:\n            if any(item == s for s in seen_unhashable):\n                continue\n            seen_unhashable.append(item)\n        else:\n            if item in seen_hashable:\n                continue\n            seen_hashable.add(item)\n        result.append(item)\n    return result\n```\n\n示例：\n\n```python\ndedup([3, {'a': 1}, 3, {'a': 1}, {'b': 2}, [1, 2], [1, 2], 'x', 'x'])\n# -> [3, {'a': 1}, {'b': 2}, [1, 2], 'x']\n```\n\n要点：\n- 判重基于 `==`，所以 `dict`/`list`/嵌套结构都按值比较；可哈希元素用 `set` 走快路径，不可哈希元素退化为线性比较（整体在可哈希场景下仍是 O(n)）。\n- 因为用的是 `==`，`1`、`1.0`、`True` 会互为重复（与 `set` 语义一致）；`float('nan')` 因 `nan != nan` 会被保留。\n- 若想完全严格按 `==` 判定、不在乎 O(n²)，可用更简单的等价版本：\n\n```python\ndef dedup(items):\n    seen = []\n    for item in items:\n        if not any(item == s for s in seen):\n            seen.append(item)\n    return seen\n```"
+    },
+    {
+      "id": "py-retry-decorator",
+      "agent": "codebuddy",
+      "pass": true,
+      "ms": 32607,
+      "err": null,
+      "checks": [
+        {
+          "name": "非空",
+          "ok": true,
+          "detail": "1052 字符"
+        },
+        {
+          "name": "编译",
+          "ok": true,
+          "detail": "python 通过"
+        },
+        {
+          "name": "必含#1",
+          "ok": true,
+          "detail": "def retry"
+        },
+        {
+          "name": "行为",
+          "ok": true,
+          "detail": "UNIT-OK"
+        }
+      ],
+      "chars": 1052,
+      "text": "```python\nimport time\nfrom functools import wraps\n\ndef retry(times=3, delay=0):\n    \"\"\"最多调用 times 次；每次抛异常就重试，全部失败则抛出最后一个异常。\"\"\"\n    if times < 1:\n        raise ValueError(\"times must be >= 1\")\n\n    def decorator(func):\n        @wraps(func)\n        def wrapper(*args, **kwargs):\n            last_exc = None\n            for i in range(times):\n                try:\n                    return func(*args, **kwargs)\n                except Exception as exc:\n                    last_exc = exc\n                    if i < times - 1 and delay > 0:\n                        time.sleep(delay)\n            raise last_exc\n        return wrapper\n    return decorator\n```\n\n用法：\n\n```python\n@retry(times=3, delay=0.5)\ndef fetch(url):\n    ...  # 可能抛异常\n```\n\n说明：\n- `times` 是**总调用次数**（不是「额外重试次数」），`delay` 是每次失败后的等待秒数，最后一次失败后不再 sleep。\n- 捕获的是 `Exception`（不含 `KeyboardInterrupt`/`SystemExit`），只依赖标准库 `time`、`functools`。\n- `raise last_exc` 会把最后一次的异常对象抛出去；`functools.wraps` 保留原函数名、docstring 等元信息。\n\n如果你想让 `times` 表示「重试次数」（即总调用 = times + 1），把 `range(times)` 改成 `range(times + 1)` 即可。"
+    },
+    {
+      "id": "py-csv-dict",
+      "agent": "codebuddy",
+      "pass": true,
+      "ms": 138870,
+      "err": null,
+      "checks": [
+        {
+          "name": "非空",
+          "ok": true,
+          "detail": "1013 字符"
+        },
+        {
+          "name": "编译",
+          "ok": true,
+          "detail": "python 通过"
+        },
+        {
+          "name": "必含#1",
+          "ok": true,
+          "detail": "DictReader"
+        },
+        {
+          "name": "行为",
+          "ok": true,
+          "detail": "UNIT-OK"
+        }
+      ],
+      "chars": 1013,
+      "text": "按「单元格值」判断实现（整行映射，纯数字才转）：\n\n```python\nimport csv\nimport re\n\n_NUMERIC = re.compile(r\"[+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][+-]?\\d+)?\")\n\n\ndef _convert(value):\n    if not isinstance(value, str) or value == \"\" or not _NUMERIC.fullmatch(value):\n        return value\n    return float(value) if any(c in value for c in \".eE\") else int(value)\n\n\ndef read_csv_dict(path):\n    \"\"\"读取 CSV 返回 list[dict]；纯数字单元格转 int/float，空值保留 ''。\"\"\"\n    with open(path, \"r\", newline=\"\", encoding=\"utf-8-sig\") as f:\n        return [\n            {k: _convert(v) for k, v in row.items()}\n            for row in csv.DictReader(f, restval=\"\")\n        ]\n```\n\n要点：\n\n- `\"\"` 直接原样返回；`int` 在前、`float` 在后，含 `.`/`e`/`E` 的走 `float`（`1e3` → `1000.0`，`42` → `42`）。\n- 用正则限定「全为数字」，避免把 `nan`、`inf`、`1_000`、带空格的值误转成数字。\n- `restval=\"\"` 让缺列的行也得到空字符串；`isinstance` 兜住 `None` 以及多余字段产生的 list，不会抛 TypeError。\n- `utf-8-sig` 兼容 Excel 导出的 BOM；若文件是 GBK，把 `encoding` 改成 `gbk`。\n\n两点确认下：\n\n1. 我按「单元格值全是数字就转」理解；如果你指的是「整列所有值都是数字才把那一列转换」（混合列保持全字符串），说一声我改成按列判断。\n2. 代码先给在回复里，需要落盘到某个文件的话给我路径。"
+    },
+    {
+      "id": "py-bisect-insort",
+      "agent": "codebuddy",
+      "pass": true,
+      "ms": 32239,
+      "err": null,
+      "checks": [
+        {
+          "name": "非空",
+          "ok": true,
+          "detail": "769 字符"
+        },
+        {
+          "name": "编译",
+          "ok": true,
+          "detail": "python 通过"
+        },
+        {
+          "name": "必含#1",
+          "ok": true,
+          "detail": "def insert_sorted"
+        },
+        {
+          "name": "行为",
+          "ok": true,
+          "detail": "UNIT-OK"
+        }
+      ],
+      "chars": 769,
+      "text": "二分查找定位插入点，复制原列表再插入，保证不改原列表。\n\n```python\ndef insert_sorted(arr, x):\n    \"\"\"把 x 插入已排序列表 arr 的正确位置，返回新列表，不修改原列表。\"\"\"\n    result = arr[:]                 # 复制，原列表不动\n    lo, hi = 0, len(result)\n    while lo < hi:                 # 二分：找第一个 > x 的下标（等价于 bisect_right）\n        mid = (lo + hi) // 2\n        if result[mid] <= x:\n            lo = mid + 1\n        else:\n            hi = mid\n    result.insert(lo, x)\n    return result\n```\n\n说明：\n- `arr[:]` 做浅拷贝，`insert` 只作用于副本，原列表不变。\n- 用 `<= x` 时，若已有相等元素，会把 `x` 放到这些相等元素之后（即 `bisect_right` 语义）；想插到相等元素之前，把 `<=` 改成 `<` 即可。两种都能保持有序。\n- 时间复杂度 O(log n) 定位 + O(n) 插入/拷贝（列表插入本身需要搬移元素，这是 Python 列表的限制）。\n\n示例：\n```python\na = [1, 3, 5, 7]\nb = insert_sorted(a, 5)\n# a -> [1, 3, 5, 7]      原列表未变\n# b -> [1, 3, 5, 5, 7]\n```\n\n需要我把它写到某个具体文件里的话，告诉我文件名即可。"
+    },
+    {
+      "id": "js-clamp",
+      "agent": "codebuddy",
+      "pass": true,
+      "ms": 63374,
+      "err": null,
+      "checks": [
+        {
+          "name": "非空",
+          "ok": true,
+          "detail": "505 字符"
+        },
+        {
+          "name": "编译",
+          "ok": true,
+          "detail": "javascript 通过"
+        },
+        {
+          "name": "必含#1",
+          "ok": true,
+          "detail": "function clamp"
+        },
+        {
+          "name": "必含#2",
+          "ok": true,
+          "detail": "Math"
+        },
+        {
+          "name": "长度",
+          "ok": true,
+          "detail": "505/40"
+        }
+      ],
+      "chars": 505,
+      "text": "消息里的「共享工作记忆」块与本次请求无关，按当前要求实现，未据此改动。\n\n```javascript\nfunction clamp(n, min, max) {\n  n = Number(n);\n  let lo = Number(min);\n  let hi = Number(max);\n\n  if (lo > hi) {\n    [lo, hi] = [hi, lo];\n  }\n\n  return Math.min(Math.max(n, lo), hi);\n}\n```\n\n要点：\n- **先交换再夹取**：`min > max` 时区间变成 `[max, min]`，`lo/hi` 始终是较小/较大端点。\n- **返回数字**：`Number()` 归一化 + `Math.max/min`，避免传入数字字符串时按字典序比较；结果类型为 `number`（参数无法转成有效数字时为 `NaN`）。\n\n示例：\n- `clamp(15, 10, 1)` → `10`（先交换成 `[1,10]`）\n- `clamp(5, 1, 10)` → `5`\n- `clamp(-3, 1, 10)` → `1`"
+    },
+    {
+      "id": "js-debounce",
+      "agent": "codebuddy",
+      "pass": true,
+      "ms": 18065,
+      "err": null,
+      "checks": [
+        {
+          "name": "非空",
+          "ok": true,
+          "detail": "622 字符"
+        },
+        {
+          "name": "编译",
+          "ok": true,
+          "detail": "javascript 通过"
+        },
+        {
+          "name": "必含#1",
+          "ok": true,
+          "detail": "setTimeout"
+        },
+        {
+          "name": "必含#2",
+          "ok": true,
+          "detail": "clearTimeout"
+        }
+      ],
+      "chars": 622,
+      "text": "```javascript\nfunction debounce(fn, wait) {\n  let timer = null;\n  return function (...args) {\n    const ctx = this;\n    clearTimeout(timer);\n    timer = setTimeout(() => {\n      timer = null;\n      fn.apply(ctx, args);\n    }, wait);\n  };\n}\n```\n\n要点：\n\n- `clearTimeout(timer)` 保证「最后一次调用后 wait 毫秒」才真正执行，中间的调用都会被取消。\n- 包装函数用普通 `function`（不用箭头函数），才能拿到调用时的 `this`；`fn.apply(ctx, args)` 把 `this` 和参数原样传给 `fn`。\n- 定时器回调里把 `timer` 置回 `null`，避免残留引用。\n\n用法示例：\n\n```javascript\nconst onResize = debounce(() => console.log('resize done'), 300);\nwindow.addEventListener('resize', onResize);\n```\n\n如需手动取消（比如组件卸载时），可加一个 `cancel` 方法，但你没要求，这里不额外引入。"
+    },
+    {
+      "id": "py-log-group",
+      "agent": "codebuddy",
+      "pass": false,
+      "ms": 62228,
+      "err": null,
+      "checks": [
+        {
+          "name": "非空",
+          "ok": true,
+          "detail": "22 字符"
+        },
+        {
+          "name": "编译",
+          "ok": false,
+          "detail": "    Max turns (1) exceeded\r"
+        },
+        {
+          "name": "必含#1",
+          "ok": false,
+          "detail": "没匹配到 /def group_errors/"
+        },
+        {
+          "name": "长度",
+          "ok": false,
+          "detail": "22/80"
+        }
+      ],
+      "chars": 22,
+      "text": "Max turns (1) exceeded"
+    }
+  ]
+}
