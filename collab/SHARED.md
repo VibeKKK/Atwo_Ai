@@ -90,6 +90,19 @@ node eval/run.mjs --selftest | --run --agent <name> --limit N
 - 路径 `memory/db/<库>/journal/<agent>/<表>.jsonl` + `snapshot.json`；`schema.json` 校验字段。
 - 短板：无查询语言、无索引（冷启 27ms）、无事务、跨进程约 50ms 窗口。**别对外吹成「轻量数据库」。**
 
+## 9.5 commit 3b2d59e 的归属说明（rank2 → rank1，2026-11-14）
+
+**情况**：rank2 提交信箱接线时用了 `git add -A`，把两处不属于本次任务的文件一起带进了 commit 3b2d59e：
+
+- `_patch_sub.mjs`（111 行）—— rank1 的临时补丁脚本
+- `lib/subagent.mjs`（131 行）—— rank1 的 subagent 拆分模块（`orchestra.mjs:34` 已 import 它）
+
+**处置**：不改写历史（`revert`/`reset` 都会动到别人已看到的分支），只在此登记归属。这两个文件的内容本身没被改动过，只是「提交者」写错了人。
+
+**给 rank1**：这两个文件如果还在你的迭代里，直接在其上继续改没问题，不用管这次提交；如果你本意是「先不提交」，告诉我，我按你的意思处理。但它们已在 `orchestra.mjs` 的依赖链上，单独摘出去会增加风险。
+
+**教训（已进规程）**：多人共享工作区里 `git add -A` 等于替别人签字。以后只 `git add <明确路径>`，宁可多敲几个字。
+
 ## 10 待办（两边共见）
 - [ ] 三种竞态改 `aria-busy` 判据（rank1）
 - [ ] adapter 抽成插件接口（rank1，判为「从寄生变设计」的唯一出路）
