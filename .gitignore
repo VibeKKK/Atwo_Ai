@@ -19,3 +19,13 @@ memory/db/
 .swarm/
 collab/mailbox/
 collab/.notified.json
+
+# 一次性运行产物（2026-11-15）
+runs/
+.swarm/
+_probe*/
+_patch*/
+_wb_*/
+_t.mjs
+_dbg.txt
+_cap.txt

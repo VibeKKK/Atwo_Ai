@@ -10,21 +10,63 @@
 // stdio 传输用 newline-delimited JSON（MCP 规范，不是 LSP 的 Content-Length）。
 
 import { spawn } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { open as openStore } from '../lib/store.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.dirname(HERE);
 const ORCH = path.join(ROOT, 'orchestra.mjs');
+const PAIR = path.join(ROOT, 'pair.mjs');
+const MAILBOX = path.join(ROOT, 'collab', 'mailbox');
+
+/** 共享数据库（两套库，按名字懒开）。 */
+const _dbs = new Map();
+function dbOf(name = 'memory') {
+  const k = name === 'memory' ? 'memory' : 'project';
+  if (_dbs.has(k)) return _dbs.get(k);
+  let d = null;
+  try { d = openStore(k); } catch { d = null; }
+  _dbs.set(k, d);
+  return d;
+}
+
+/** 记一条派活。失败不抛——台账不能影响主流程。 */
+function record(name, argv, r, ms) {
+  try {
+    const d = dbOf('memory');
+    if (!d) return;
+    const head = String(r.out || '').replace(/\s+/g, ' ').trim().slice(0, 160);
+    d.put('atw', name + ':' + new Date().toISOString().replace(/[:.]/g, '-'), {
+      tool: name,
+      argv: argv.join(' ').slice(0, 200),
+      code: r.code,
+      ok: r.code === 0 && !r.killed,
+      ms,
+      head,
+    }, { by: 'atw-mcp', note: 'mcp 派活' });
+  } catch { /* 静默 */ }
+}
+
+/** 信箱未读数（给 atw_health 用）。 */
+function unreadMail() {
+  try {
+    const readFile = path.join(ROOT, 'collab', '.read.json');
+    const read = JSON.parse(fs.readFileSync(readFile, 'utf8') || '{}');
+    const all = fs.readdirSync(MAILBOX).filter((f) => f.endsWith('.md'));
+    return { unread: all.filter((f) => !read[f]).length, total: all.length };
+  } catch { return { unread: 0, total: 0 }; }
+}
 
 // 单个工具调用最多等多久。orchestra 自己的 ORCH_TIMEOUT_MS 默认 240s，
 // 这里留出余量给「拆解 + 多轮派活 + 验收」，否则外层先超时会把真实进度全吞掉。
 const CALL_TIMEOUT_MS = Number(process.env.ATW_CALL_TIMEOUT_MS || 600000);
 
 /** 跑一条 orchestra 子命令，收齐 stdout/stderr，返回退出码与文本。 */
-function runOrch(args, { timeoutMs = CALL_TIMEOUT_MS, cwd = ROOT } = {}) {
+function runOrch(args, { timeoutMs = CALL_TIMEOUT_MS, cwd = ROOT, script = ORCH } = {}) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [ORCH, ...args], {
+    const child = spawn(process.execPath, [script, ...args], {
       cwd,
       env: { ...process.env, NO_COLOR: '1' },
       windowsHide: true,
@@ -127,6 +169,43 @@ const TOOLS = [
     description: '台账：各通道调用次数、成功率、平均耗时、平均字符数、累计 token。用来判断「哪条通道最近在拖后腿」。',
     inputSchema: { type: 'object', properties: {} },
   },
+  {
+    name: 'atw_db',
+    description:
+      '直接读写共享数据库（不派活、不花额度、毫秒级）。两套库：project（会过期的工作状态）/ memory（长期记忆）。\n\n' +
+      '【什么时候用它而不是写文件】要存「跨会话/跨 agent 都要看到的状态」时用它：项目进度、试过的坑、选型结论。' +
+      '多处同时写不加锁（4 进程 × 250 条 = 1000 条 / 165ms / 0 错误），后写覆盖、by 记谁改的。\n\n' +
+      'action：list 列整库或某表 / get 取一键 / put 写一键（需要 table+key+val）/ del 逻辑删除 / history 看某键的全部历史 / tables 列表名 / stat 看行数与文件数。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['list', 'get', 'put', 'del', 'history', 'tables', 'stat'] },
+        db: { type: 'string', enum: ['project', 'memory'], description: '默认 project' },
+        table: { type: 'string', description: '表名，如 orchestra / trae / 原则' },
+        key: { type: 'string' },
+        val: { type: 'object', description: 'put 时的值，必须是对象' },
+        limit: { type: 'number', description: 'history 返回条数，默认 20' },
+      },
+      required: ['action'],
+    },
+  },
+  {
+    name: 'atw_peer',
+    description:
+      '和另一个工作区的副总管（rank2）通信。走文件信箱，对方每 5 分钟被通知一次。\n\n' +
+      'action：board 看双方状态 + 未读信 + 最近共享条目 / post 投一封信（需要 text）/ read 标记全部已读。\n\n' +
+      '【什么时候用它】需要另一个独立上下文把关（审阅、找反证）、或要把结论同步给对方时。' +
+      '不要用它代替自己动手——它只负责送信，不保证对方马上看。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['board', 'post', 'read'] },
+        text: { type: 'string', description: 'post 时的信正文' },
+        topic: { type: 'string', description: 'post 时的标题，可省' },
+      },
+      required: ['action'],
+    },
+  },
 ];
 
 /** 由工具名 + 参数拼出 orchestra 的 argv。 */
@@ -157,14 +236,107 @@ function buildArgs(name, a) {
   throw new Error('未知工具 ' + name);
 }
 
+/** 共享数据库：进程内直读直写（不派活、不花额度、毫秒级）。 */
+function handleDb(a = {}) {
+  const dbName = a.db === 'memory' ? 'memory' : 'project';
+  const d = dbOf(dbName);
+  if (!d) return { isError: true, text: '共享数据库打不开：lib/store.mjs 加载失败' };
+  const act = String(a.action || 'list');
+  const fmt = (v) => (v == null ? 'null' : JSON.stringify(v));
+  try {
+    if (act === 'tables') {
+      const ts = d.tables();
+      return { text: dbName + ' 库表（' + ts.length + '）：\n' + ts.map((t) => '  ' + t.table + '  ' + t.rows + ' 行').join('\n') };
+    }
+    if (act === 'stat') {
+      const s = d.stats();
+      const agents = (s.agents || []).map((x) => x.by + '(' + ((x.puts || 0) + (x.dels || 0)) + ')').join(' ') || '—';
+      return { text: dbName + ' 库：活行 ' + s.liveRows + ' · 记录 ' + s.records + ' · 文件 ' + (s.files != null ? s.files : '?') + '\n写入者：' + agents };
+    }
+    if (act === 'list') {
+      const rows = d.list(a.table);
+      if (!rows.length) return { text: (a.table ? '表 ' + a.table : dbName + ' 库') + '：没有存活行' };
+      return { text: rows.map((r) => '  ' + r.table + '/' + r.key + '  ' + fmt(r.val).slice(0, 120) + '  [' + r.by + ' ' + r.ts + ']').join('\n') };
+    }
+    if (act === 'get') {
+      if (!a.table || !a.key) throw new Error('get 需要 table 和 key');
+      const v = d.get(a.table, a.key);
+      if (v == null) return { isError: true, text: '没有 ' + a.table + '/' + a.key };
+      // view() 存的是完整记录（v/db/seq/ts/op/table/key/val/note/by），对外只给值 + 谁改的
+      if (v && typeof v === 'object' && 'val' in v) {
+        return { text: JSON.stringify(v.val, null, 2) + '\n— by ' + v.by + ' @ ' + v.ts };
+      }
+      return { text: JSON.stringify(v, null, 2) };
+    }
+    if (act === 'put') {
+      if (!a.table || !a.key) throw new Error('put 需要 table 和 key');
+      const val = a.val && typeof a.val === 'object' && !Array.isArray(a.val) ? a.val : {};
+      d.put(a.table, a.key, val, { by: 'atw-mcp' });
+      return { text: '已写入 ' + dbName + '/' + a.table + '/' + a.key + '：' + fmt(val).slice(0, 160) };
+    }
+    if (act === 'del') {
+      if (!a.table || !a.key) throw new Error('del 需要 table 和 key');
+      d.del(a.table, a.key, { by: 'atw-mcp' });
+      return { text: '已逻辑删除 ' + dbName + '/' + a.table + '/' + a.key + '（历史仍可查）' };
+    }
+    if (act === 'history') {
+      if (!a.table || !a.key) throw new Error('history 需要 table 和 key');
+      const h = d.history(a.table, a.key, { limit: Number(a.limit) || 20 });
+      if (!h.length) return { text: '没有 ' + a.table + '/' + a.key + ' 的历史' };
+      return { text: h.map((x, i) => (i + 1) + '. ' + x.ts + '  ' + x.by + ' ' + x.op + '  ' + fmt(x.val).slice(0, 120)).join('\n') };
+    }
+    return { isError: true, text: '未知 action：' + act + '（可用 list/get/put/del/history/tables/stat）' };
+  } catch (e) {
+    return { isError: true, text: String((e && e.message) || e) };
+  }
+}
+
+/** 信箱：转调 pair.mjs（board / post / read）。 */
+async function handlePeer(a = {}) {
+  const act = String(a.action || 'board');
+  let argv;
+  if (act === 'board') argv = [];
+  else if (act === 'read') argv = ['read'];
+  else if (act === 'post') {
+    if (!a.text) return { isError: true, text: 'post 需要 text' };
+    argv = ['post', String(a.text)];
+    if (a.topic) argv.push('--topic', String(a.topic));
+  } else return { isError: true, text: '未知 action：' + act };
+  const r = await runOrch(argv, { script: PAIR, timeoutMs: 30000 });
+  return { isError: r.code !== 0, text: pack(r) };
+}
+
+/** health 附加信息：双库行数 + 未读信。 */
+function healthExtra() {
+  const lines = [];
+  for (const n of ['project', 'memory']) {
+    const d = dbOf(n);
+    if (!d) { lines.push('  ' + n + ' 库：打不开'); continue; }
+    try { lines.push('  ' + n + ' 库：' + d.stats().liveRows + ' 行'); }
+    catch { lines.push('  ' + n + ' 库：读不出'); }
+  }
+  const m = unreadMail();
+  lines.push('  信箱：未读 ' + m.unread + ' / 共 ' + m.total);
+  return lines.join('\n');
+}
+
 async function handleCall(name, args) {
+  // 1) 共享数据库：进程内直读直写，不走子进程、不花额度
+  if (name === 'atw_db') return handleDb(args || {});
+  // 2) 信箱：转调 pair.mjs
+  if (name === 'atw_peer') return handlePeer(args || {});
+
   let argv;
   try { argv = buildArgs(name, args); }
   catch (e) { return { isError: true, text: String(e.message || e) }; }
+  const t0 = Date.now();
   const r = await runOrch(argv);
-  const text = pack(r);
+  const ms = Date.now() - t0;
+  let text = pack(r);
   // 台账/健康是只读快照，永远不算失败；派活类 exits != 0 才算
   const readOnly = name === 'atw_health' || name === 'atw_stats';
+  if (!readOnly) record(name, argv, r, ms);
+  if (name === 'atw_health') text += '\n' + healthExtra();
   return { isError: !readOnly && (r.code !== 0 || r.killed), text };
 }
 

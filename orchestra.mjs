@@ -31,7 +31,7 @@ import { preflightTrae } from './lib/preflight.mjs';
 import { check as budgetCheck, record as budgetRecord, report as budgetReport, usedToday } from './lib/budget.mjs';
 import { start as prStart, finish as prFinish } from './pr.mjs';
 import { loadTasks, buildBatchPrompt, splitResults } from './lib/batch.mjs';
-import { runSwarm, loadSwarmTasks, parseSlots, renderReport, fmtMs, routeTask, listRuns, DEFAULT_SLOTS } from './lib/swarm.mjs';
+import { runSwarm, runSwarmWaves, loadSwarmTasks, parseSlots, renderReport, fmtMs, routeTask, listRuns, DEFAULT_SLOTS } from './lib/swarm.mjs';
 import { DECOMPOSE_CONTRACT, parseSubtasks, singleTask, buildBrief, briefDir, writeBrief, digest, renderDigest } from './lib/subagent.mjs';
 import { assemble, renderReport as renderBudget } from './lib/prompt.mjs';
 import { add as ephAdd, list as ephList, remove as ephRemove, clear as ephClear, gc as ephGc, briefBlock as ephBrief, readSkill as ephReadSkill, stats as ephStats, KINDS as EPH_KINDS } from './lib/ephemeral.mjs';
@@ -1087,7 +1087,9 @@ try {
     const t0 = Date.now();
     let out = null;
     try {
-      out = await runSwarm(tasks, {
+      // 分波次：任务带 deps 时按依赖图切层，逐层并行；不带 deps 时行为与原来完全一致。
+      // 一把并行的代价是「下游基于空气写代码」，返工吃掉并行赚的全部收益。
+      out = await runSwarmWaves(tasks, {
         mode: flags.mode, slots, resume: flags.resume, taskSource: src,
         switchOnFail: flags.switchOnFail,
         land: flags.land, verify: flags.verify, maxFix: flags.maxFix, force: flags.force, deep: flags.deep,
