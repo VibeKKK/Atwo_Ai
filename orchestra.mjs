@@ -499,24 +499,6 @@ async function dispatch(kindLabel, rawPrompt, extra = {}) {
     try { cachePut(name, cacheKeyPrompt, r.addedText); } catch { /* 缓存失败不影响交付 */ }
   }
 
-  // PR 模式收尾：开了提案就必须结提案。
-  // 2026-11-15 rank2 查到的根因：prFinish 在第 32 行 import 进来之后，全文一次都没被调用。
-  // 于是每个提案永远停在 status='open'、files=[]、diffStat=''，列表一律显示「(无 diff)」——
-  // 昨天 7 条空提案不是提案系统设计有问题，是收尾这一步从来没执行过。
-  if (pr && r && r.ok) {
-    try {
-      const done = prFinish(pr.id);
-      entry.prStatus = done.status;
-      entry.prFiles = done.files.length;
-      console.error('[PR] 结提案 ' + done.id + ' ' + done.status + '  files=' + done.files.length);
-    } catch (e) {
-      // 结不了就如实记下来，不假装成功。最常见的失败是 agent 中途切走了分支。
-      entry.prStatus = 'finish-failed';
-      entry.prError = String((e && e.message) || e).slice(0, 120);
-      console.error('[PR] 结提案失败：' + entry.prError);
-    }
-  }
-
   const entry = {
     agent: name,
     kind: kindLabel,
