@@ -120,9 +120,15 @@ export async function askDoubao(prompt, opts = {}) {
           if (content.trim()) {
             const ms = Date.now() - t0;
             record(NAME, { input: Math.ceil(text.length / 2), output: Math.ceil(content.length / 2), ok: true });
-            appendLog({ agent: NAME, ms, ok: true, mode: 'file', taskChars: text.length, resultChars: content.length, id });
+            // 字段名必须和 orchestra.mjs stats 读取的口径一致（第 661-662 行读 elapsedMs / outputChars）。
+            // 2026-11-15 rank2：原来写 ms / resultChars，stats 读不到，doubao 在流水里显示「均 0.0s / 0 字符」——
+            // 5 次调用全被记成 0，看板上等于这条通道不存在。旧字段保留一份，方便回看历史流水。
+            appendLog({ agent: NAME, elapsedMs: ms, outputChars: content.length, ok: true, mode: 'file', taskChars: text.length, resultChars: content.length, ms, id });
             const code = opts.ext && /\.(mjs|js|cjs|ts|py|sh|ps1)$/.test(opts.ext) ? content : '';
             return {
+              // orchestra.mjs 的 dispatch 只认 addedText（第 508 行 `r.addedText`）。
+              // 原来只返回 answer/code/raw，上层统计拿不到正文，字符数一律记 0。
+              addedText: content,
               answer: code ? '' : content.trim(),
               code,
               notes: [],
@@ -139,7 +145,7 @@ export async function askDoubao(prompt, opts = {}) {
       throw new Error('等结果文件超时 ' + Math.round(timeoutMs / 1000) + 's（' + resultPath + '）');
     } catch (err) {
       const ms = Date.now() - t0;
-      appendLog({ agent: NAME, ms, ok: false, mode: 'file', err: String(err && err.message || err).slice(0, 200), id });
+      appendLog({ agent: NAME, elapsedMs: ms, outputChars: 0, ok: false, mode: 'file', err: String(err && err.message || err).slice(0, 200), ms, id });
       throw err;
     } finally {
       if (c) try { c.close(); } catch {}

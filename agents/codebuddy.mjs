@@ -104,8 +104,11 @@ export async function askCodeBuddy(prompt, opts = {}) {
   // 系统提示里工具 schema 占大头，限制工具就砍掉 2/3 固定开销。
   const tools = process.env.CODEBUDDY_TOOLS !== undefined ? process.env.CODEBUDDY_TOOLS : 'Write,Edit,Read';
   // 2026-11-14 改：max-turns 硬编码 1 会让「要求它思考一轮再输出」的活直接报 Max turns (1) exceeded
-  // （自改项目 self.mjs 首次踩到）。改成可用 CODEBUDDY_MAX_TURNS 覆盖，默认行为不变。
-  const maxTurns = String(process.env.CODEBUDDY_MAX_TURNS || '1');
+  // （自改项目 self.mjs 首次踩到）。改成可用 CODEBUDDY_MAX_TURNS 覆盖。
+  // 2026-11-15 rank2：默认值 1 → 8。实测两个「读文件 + 分析 + 写产物」的调研任务
+  // 全部只返回 21 个字符 "Max turns (1) exceeded"，且被 land 当成产物试图落盘。
+  // 一轮只够一句话回答；需要读写文件、走工具的活至少 8 轮。环境变量仍可双向覆盖。
+  const maxTurns = String(process.env.CODEBUDDY_MAX_TURNS || '8');
   const args = ['-p', prompt, '--output-format', 'json', '--tools', tools, '--no-session-persistence', '--max-turns', maxTurns];
   if (permissionMode) args.push('--permission-mode', permissionMode);
   if (model) args.push('--model', model);
