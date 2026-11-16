@@ -44,11 +44,11 @@ export const CASES = [
   {
     id: 'e5-verbs',
     task: 'atwo.mjs 的 table 里一共有几个动词？把它们列出来。',
-    truth: '11 个：new batch go check diff judge fanout done state mode raw',
+    truth: '22 个：doctor try should gate hooks score attest pitfall models new go check diff judge fanout triage army batch done state mode raw',
     children: [
-      { id: 'c1', answer: '11 个：new / batch / go / check / diff / judge / fanout / done / state / mode / raw', evidence: "atwo.mjs 里 const table = { ... }" },
+      { id: 'c1', answer: '22 个：doctor try should gate hooks score attest pitfall models new go check diff judge fanout triage army batch done state mode raw', evidence: "atwo.mjs 里 const table = { ... }" },
       { id: 'c2', answer: '10 个：new / batch / go / check / diff / judge / done / state / mode / raw', evidence: 'atwo.mjs 的动词表' },
-      { id: 'c3', answer: '共 11 个，包含后来加的 fanout', evidence: '看了 atwo.mjs' },
+      { id: 'c3', answer: '共 22 个，包含后来加的 fanout / army / triage / doctor', evidence: '看了 atwo.mjs' },
     ],
   },
   {

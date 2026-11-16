@@ -30,7 +30,7 @@ const src = (f) => fs.readFileSync(path.join(root, f), 'utf8');
 {
   const s = src('lib/fanout-run.mjs');
   ok(/ATWO_CHILD_MAX_TURNS/.test(s), '2 无分片子会话有显式回合预算（ATWO_CHILD_MAX_TURNS）');
-  ok(/Math\.min\(40, 16 \+ Math\.ceil\(taskChars \/ 200\)\)/.test(s), '2b 回合预算按任务长度算（16 + 每 200 字 1 回合，上限 40）');
+  ok(/Math\.min\(60, 24 \+ Math\.ceil\(taskChars \/ 150\)\)/.test(s), '2b 回合预算按任务长度算（24 + 每 150 字 1 回合，上限 60）');
   const cli = fs.readFileSync(path.join(root, 'lib/fanout-cli.mjs'), 'utf8');
   ok(/Math\.min\(300000, Math\.max\(180000, 60000 + String\(task || ''\)\.length * 50\)\)/.test(cli), '2c 子会话超时按任务长度放宽（180s~300s）');
 }
