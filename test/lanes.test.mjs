@@ -1,6 +1,6 @@
 // test/lanes.test.mjs —— 编队层：谁能并行、谁能出产物、探测说不行就别派。
 import assert from 'node:assert/strict';
-import { LANE_DEFS, describePlan, dispatchLanes, laneIds, planLanes, probeLanes } from '../lib/lanes.mjs';
+import { LANE_DEFS, describePlan, dispatchLanes, laneIds, planLanes, probeLanes, resolveAsk } from '../lib/lanes.mjs';
 import { MAX_PARTS, MAX_TOTAL_PARTS, clampFanoutParts, clampParts } from '../lib/fanout-run.mjs';
 import { buildReviewPrompt } from '../lib/fanout.mjs';
 
@@ -96,8 +96,27 @@ await ta('dispatchLanes：按计划分派、结果保持 child 顺序、lane 正
   assert.equal(seen.length, 4);
 });
 
-await ta('dispatchLanes：GUI 通道没有 ask 时要明确报错，不许静默丢活', async () => {
-  await assert.rejects(() => dispatchLanes([{ lane: 'trae', count: 1 }], [{ prompt: 'p' }], {}), /没有 ask 实现/);
+// 2026-11-16 改（异源父审）：GUI 通道不再是 ask=null，懒加载实现接上来了。
+// 于是「静默丢活」这条风险从「没有 ask」变成「取不到就偷偷退回 codebuddy」——
+// 后者更危险（看起来异源，其实同源），所以 resolveAsk 一律抛错。
+await ta('resolveAsk：GUI 通道能取到 ask，未知通道必须抛错（不许静默退回 codebuddy）', async () => {
+  assert.equal(typeof LANE_DEFS.trae.ask, 'function');
+  assert.equal(typeof LANE_DEFS.workbuddy.ask, 'function');
+  assert.equal(typeof LANE_DEFS.doubao.ask, 'function');
+  assert.equal(typeof resolveAsk('trae'), 'function');
+  assert.throws(() => resolveAsk('nope'), /没有这个通道/);
+  assert.throws(() => resolveAsk(''), /没有通道 id/);
+});
+
+await ta('dispatchLanes：不传 asks 时用编队表里各通道自己的 ask', async () => {
+  let used = null;
+  const orig = LANE_DEFS.trae.ask;
+  LANE_DEFS.trae.ask = async () => { used = 'trae'; return { ok: true, addedText: 'ANSWER:\nx' }; };
+  try {
+    const out = await dispatchLanes([{ lane: 'trae', count: 1 }], [{ prompt: 'p' }], {});
+    assert.equal(used, 'trae');
+    assert.equal(out.length, 1);
+  } finally { LANE_DEFS.trae.ask = orig; }
 });
 
 await ta('dispatchLanes：计划少于 children 时补到首选通道，不丢活', async () => {

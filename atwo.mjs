@@ -28,6 +28,7 @@ import { makeTriageVerb } from './lib/triage-cli.mjs';
 import { installHooks, hookStatus, removeHooks, formatHookStatus, formatInstall } from './lib/hooks.mjs';
 import { VERBS, GLOBAL_FLAGS, EXIT_CODES, LIMITS, isHelp, checkFlags, positional, specOf, formatSpec, capsJson, valueFlagsOf } from './lib/cli-spec.mjs';
 import { detectEnvironment, quickSelfCheck } from './lib/bootstrap.mjs';
+import { probeReviewers, formatProbes } from './lib/reviewer-probe.mjs';
 import { shouldDelegate, formatShould } from './lib/should.mjs';
 import { runGate, formatGate } from './lib/gate.mjs';
 import { judgeOutcome, formatOutcome, exitForOutcome, judgeStall } from './lib/outcome.mjs';
@@ -1350,7 +1351,47 @@ async function cmdBare() {
   return EXIT.ok;
 }
 
+/**
+ * 探活引用：真行从本文件读（找到 0 个自证引用就说明 EXIT 常量被改了），
+ * 假行是刻意编的（行号取一个远超文件行数的数）——「抓不住错」只有靠假行才测得出来。
+ */
+function probeCitation() {
+  const self = path.resolve(HERE, 'atwo.mjs');
+  const lines = fs.readFileSync(self, 'utf8').split('\n');
+  const idx = lines.findIndex((l) => /const EXIT = \{/.test(l));
+  if (idx < 0) return null;
+  return {
+    trueRef: 'atwo.mjs:' + (idx + 1),
+    trueText: lines[idx].trim(),
+    falseRef: 'atwo.mjs:' + (idx + 1 + 5000),
+    falseText: '（这一行不存在：探活用假引用）',
+  };
+}
+
 async function cmdDoctor(args) {
+  // --reviewers：父审探活（会真派 AI，慢且费额度）。
+  // 为什么放在 doctor 里：它问的是同一类问题 ——「这台机器现在能干什么」。
+  // 通道能连上 ≠ 能当父审：2026-11-17 实测三个 GUI/本地通道连得上，但一个占位超时、
+  // 一个回服务端错误、一个退化重复加误杀。没有这一层，「异源评审」只是纸面说法。
+  const rv = takeOpt(args, '--reviewers');
+  // takeOpt 的缺省 val 是 null（不是 undefined）—— 用 undefined 判断会让无参数的 atwo doctor
+  // 也掉进探活分支、默认跑四条通道（实测因此把 doctor 从 1s 拖到 181s）。
+  if (rv.val !== null) {
+    const want = String(rv.val || '').split(',').map((s) => s.trim()).filter(Boolean);
+    const lanes = want.length ? want : ['codebuddy', 'trae', 'workbuddy', 'ollama'];
+    const cite = probeCitation();
+    if (!cite) {
+      console.error('探活需要两条可机器判定的引用（真实行 + 编造行），没找到 —— 说明 atwo.mjs 里 EXIT 常量被人改过。');
+      console.error('这一条没有派活、没有改任何东西。');
+      return EXIT.precondition;
+    }
+    const results = await probeReviewers(lanes, cite, { cwd: HERE, timeoutMs: 300000 });
+    RESULT.data = { reviewers: results };
+    if (JSON_MODE) { console.log(formatProbes(results)); return results.some((r) => r.usable) ? EXIT.ok : EXIT.accept; }
+    console.log('父审探活（真派一次，看它能不能解出票、判对真假、不退化）：');
+    console.log(formatProbes(results));
+    return results.some((r) => r.usable) ? EXIT.ok : EXIT.accept;
+  }
   const c = await detectEnvironment();
   printCan(c);
   console.log('');
