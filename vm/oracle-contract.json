@@ -1,0 +1,230 @@
+{
+  "service": "ternary-oracle",
+  "contractVersion": 2,
+  "generatedBy": "vm/export-contract.mjs",
+  "cut": {
+    "high": 0.45,
+    "mid": 0.22
+  },
+  "zLimit": 3,
+  "spreadEps": 1e-9,
+  "expectedDefault": 9,
+  "dedupRule": "同一 source 只计一次（同来源多读数取均值）；无 source 标签时按原始读数去重（相同读数算一份证据）；去重键用截断前的原值，避免 3.1/3.2/3.4 截断成 3 后被误合并",
+  "zRule": "clamp(z, -zLimit, +zLimit)；非有限值不计入有效数；截断只影响计分，不影响「算几个证据」",
+  "formula": "nSources=去重后来源数 · nValid=min(1, nSources/expectedDefault或expected) · strength=tanh(|meanZ|) · agreement=(nSources<2?0:tanh(|meanZ|/spread)) · confidence=strength*agreement*nValid",
+  "verdictRule": "confidence>=high → +1 ; >=mid → 0 ; 否则 -1 ; value=+1 且 meanZ=0 → -1（脱钩保护）",
+  "votes": {
+    "arity": 0.8,
+    "rule": "到票率 (ACCEPT+REVISE)/expected < arity → 一律 unreviewed/insufficient，不看 confidence",
+    "rosterRule": "expected（应评名额）未显式声明 → 到票率不可算 → 一律 unreviewed/no-roster；绝不把 votes.length 当成应评名额",
+    "ACCEPT": 1,
+    "REVISE": -1,
+    "unreviewed": "excluded（但仍占应评名额）",
+    "sources": "每张票是一个独立来源（评审人 id，缺省 ballot:i），三张 ACCEPT 是三个证据"
+  },
+  "vectors": [
+    {
+      "name": "强证据·九项独立",
+      "zValues": [
+        3.1,
+        2.9,
+        3.4,
+        2.8,
+        3,
+        3.2,
+        2.7,
+        3.3,
+        3.1
+      ],
+      "value": 1,
+      "confidence": 0.88378377039,
+      "meanZ": 2.925,
+      "spread": 0.10897247358851682,
+      "nValid": 0.8888888888888888,
+      "strength": 0.9942567416885992,
+      "agreement": 1,
+      "nSources": 8
+    },
+    {
+      "name": "全零·脱钩",
+      "zValues": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "value": -1,
+      "confidence": 0,
+      "meanZ": 0,
+      "spread": 1e-9,
+      "nValid": 0.1111111111111111,
+      "strength": 0,
+      "agreement": 0,
+      "nSources": 1
+    },
+    {
+      "name": "方向打架",
+      "zValues": [
+        3,
+        -3,
+        3,
+        -3,
+        3,
+        -3,
+        3,
+        -3,
+        3
+      ],
+      "value": -1,
+      "confidence": 0,
+      "meanZ": 0,
+      "spread": 3,
+      "nValid": 0.2222222222222222,
+      "strength": 0,
+      "agreement": 0,
+      "nSources": 2
+    },
+    {
+      "name": "单个极端值·截断",
+      "zValues": [
+        -180
+      ],
+      "value": -1,
+      "confidence": 0,
+      "meanZ": -3,
+      "spread": 1e-9,
+      "nValid": 0.1111111111111111,
+      "strength": 0.9950547536867305,
+      "agreement": 0,
+      "nSources": 1
+    },
+    {
+      "name": "三项中等",
+      "zValues": [
+        1,
+        0.9,
+        1.1
+      ],
+      "value": 0,
+      "confidence": 0.25386471864,
+      "meanZ": 1,
+      "spread": 0.08164965809277262,
+      "nValid": 0.3333333333333333,
+      "strength": 0.7615941559557649,
+      "agreement": 0.999999999953971,
+      "nSources": 3
+    },
+    {
+      "name": "刚好压线高",
+      "zValues": [
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        0.35
+      ],
+      "value": -1,
+      "confidence": 0.176540717425,
+      "meanZ": 1.675,
+      "spread": 1.3250000000000002,
+      "nValid": 0.2222222222222222,
+      "strength": 0.9322096716816437,
+      "agreement": 0.8522044477165743,
+      "nSources": 2
+    },
+    {
+      "name": "退化·同一读数九次",
+      "zValues": [
+        0.5,
+        0.5,
+        0.5,
+        0.5,
+        0.5,
+        0.5,
+        0.5,
+        0.5,
+        0.5
+      ],
+      "value": -1,
+      "confidence": 0,
+      "meanZ": 0.5,
+      "spread": 1e-9,
+      "nValid": 0.1111111111111111,
+      "strength": 0.46211715726000974,
+      "agreement": 0,
+      "nSources": 1
+    },
+    {
+      "name": "退化·九源同值（真多重印证）",
+      "zValues": [
+        {
+          "z": 1.2,
+          "source": "m1"
+        },
+        {
+          "z": 1.2,
+          "source": "m2"
+        },
+        {
+          "z": 1.2,
+          "source": "m3"
+        },
+        {
+          "z": 1.2,
+          "source": "m4"
+        },
+        {
+          "z": 1.2,
+          "source": "m5"
+        },
+        {
+          "z": 1.2,
+          "source": "m6"
+        },
+        {
+          "z": 1.2,
+          "source": "m7"
+        },
+        {
+          "z": 1.2,
+          "source": "m8"
+        },
+        {
+          "z": 1.2,
+          "source": "m9"
+        }
+      ],
+      "value": 1,
+      "confidence": 0.833654607012,
+      "meanZ": 1.2,
+      "spread": 1e-9,
+      "nValid": 1,
+      "strength": 0.8336546070121552,
+      "agreement": 1,
+      "nSources": 9
+    },
+    {
+      "name": "退化·单值三点",
+      "zValues": [
+        1
+      ],
+      "value": -1,
+      "confidence": 0,
+      "meanZ": 1,
+      "spread": 1e-9,
+      "nValid": 0.1111111111111111,
+      "strength": 0.7615941559557649,
+      "agreement": 0,
+      "nSources": 1
+    }
+  ]
+}
