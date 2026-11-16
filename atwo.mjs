@@ -1176,7 +1176,7 @@ if (JSON_MODE) {
   process.stderr.write = collect;
 }
 
-const cmdFanout = makeFanoutVerb({ EXIT, RESULT, HERE, die });
+const cmdFanout = makeFanoutVerb({ EXIT, RESULT, HERE, die, activeTask });
 
 const bareCall = !process.argv[2];
 const verb = String(process.argv[2] || '__bare').toLowerCase();
