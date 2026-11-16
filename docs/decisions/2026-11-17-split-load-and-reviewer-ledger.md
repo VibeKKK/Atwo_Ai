@@ -107,3 +107,54 @@ rm -f memory/reviewer-ledger.jsonl
 ```
 回滚 `lib/fanout-cli.mjs` 会连带退回「`--split` 只做个数均衡」；`opts.splitPlan` 是纯增参，
 旧调用方不传时行为不变。
+
+## 八、01:13 夜跑的三个假结论（都在同一次跑里撞出来）
+
+### 8.1 「子会话不交卷」其实是回合预算给少了
+
+派三路读一份长简报（方向讨论），三路全回 `ANSWER: (空)`，机械闸门判 REVISE，理由是「ANSWER 为空（等于没交）」。
+看子会话原始输出：
+
+```
+codebuddy 通道报错：Max turns (10) exceeded
+```
+
+`lib/fanout-run.mjs` 只在**分片**时给回合预算（`min(60, 8 + units*3)`），不分片就落到 codebuddy 的默认 10 回合。
+长简报在 10 回合里读不完 → 撞满 → 空答案 → 被记成「产物不合格」。
+修：无分片时默认 20 回合（`ATWO_CHILD_MAX_TURNS` 可覆盖）。
+
+### 8.2 「父审没给票」其实是通道还没写完
+
+同一次跑，WorkBuddy 当父审，`REVIEW-RAW.md` 正文：
+
+```
+读取 reviewer-ledger.mjs
+[
+生成回复中
+已消耗 6.22
+```
+
+JSON 数组只写了开头。占位判据 `looksPlaceholder` 只认整段就是「思考中」，认不出「答案 + 界面状态」的组合。
+修：新增 `looksIncomplete()` —— 命中 `生成回复中|正在生成|已消耗 N` 或**括号不闭合**就判没写完；等待从 6s 提到 15s。
+
+### 8.3 「探活通过」不代表「能审真产物」
+
+同一次跑之前的 `doctor --reviewers`：WorkBuddy **28.6s ✓ 可当父审**；真跑当父审：**0 条票**。
+探活用的是三份构造产物（真行真内容 / 编造行 / 真行号假内容），真跑是三份真产物 —— 两者难度不同。
+修：台账按来源分开记（`source: probe|fanout`），推荐排序改成三档：
+
+| 档 | 条件 | 含义 |
+|---|---|---|
+| 0 | `fanoutOk > 0` | 真跑验过，能审真产物 |
+| 1 | 只有探活记录 | 试过但没上过真活 |
+| 2 | `fanoutRuns > 0` 且全败 | 真跑失败过 —— 比「没试过」更没资格，沉底 |
+
+`recommendReviewers` 优先档 0/1，档 2 只在没有别的可选时出现。
+
+### 8.4 顺带修的健壮性
+
+`summarizeLane` 收到稀疏数组（`Array(3)` 不 fill 就 map）时，一个 `undefined` 就让整个判读抛错。
+台账是旁证，不该因为上游手滑崩掉：加了 `filter(Boolean)`。
+
+测试：`test/fanout_lane_complete.test.mjs` 14 条（半截答案三态、回合预算、通道报错理由、REVIEW-RAW 指向、真跑失败沉淀、来源标记）。
+
