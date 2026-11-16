@@ -42,6 +42,7 @@ collab/.armed
 reviews/
 .atw/tasks/
 .atw/fanout/
+.atw/army/
 .atw/workspace/
 .atw/*.json
 .agents/

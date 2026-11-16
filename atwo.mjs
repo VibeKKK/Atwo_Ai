@@ -10,6 +10,7 @@
  * 老命令一个都没删，全部还能用：atwo raw <原命令> 直接转过去。
  */
 import { spawn, spawnSync } from 'node:child_process';
+import { attestFiles, auditAttestations, formatAudit, appendAttestation, readAttestations } from './lib/accept-attest.mjs';
 import fs from 'node:fs';
 import { discoverVotes as discoverReviewVotes } from './lib/review-feed.mjs';
 import { parseLines, progressLine, classifyLine, decideAbort, summarizeRun } from './lib/supervise.mjs';
@@ -20,7 +21,9 @@ import { groupByBehavior, splitByBehavior, renderDecisions } from './lib/diverge
 import { ledgerLine } from './lib/ledger.mjs';
 import { summarize } from './lib/report.mjs';
 import { quotaRecord, appendQuota } from './lib/quota-log.mjs';
+import { selfLanded, detectTarget } from './lib/land.mjs';
 import { makeFanoutVerb } from './lib/fanout-cli.mjs';
+import { makeArmyVerb } from './lib/army-cli.mjs';
 import { VERBS, GLOBAL_FLAGS, EXIT_CODES, LIMITS, isHelp, checkFlags, positional, specOf, formatSpec, capsJson, valueFlagsOf } from './lib/cli-spec.mjs';
 import { detectEnvironment, quickSelfCheck } from './lib/bootstrap.mjs';
 import { shouldDelegate, formatShould } from './lib/should.mjs';
@@ -443,6 +446,7 @@ const DEFAULT_TIMEOUTS = {
 };
 
 async function cmdGo(args) {
+  const __t0 = Date.now();   // P0-1 产物优先：只认这之后落地的文件
   const mode = readMode();
   const { val: sizeRaw, rest: rest1 } = takeOpt(args, '--size');
   // --plan 只算参数不派活：四路全上的 crazy 真跑一次几分钟，验证档位不该花这个钱
@@ -566,6 +570,44 @@ async function cmdGo(args) {
     RESULT.data.quota = quota;
     console.log('! 额度账本写入失败：' + (e && e.message ? e.message : String(e)));
   }
+  
+  // ——— P0-1 产物优先 ———
+  // 一个工具可以慢、可以笨，但不能「说失败了东西其实在」、也不能「说成功而东西没了」。
+  // 所以：产物在盘上 + 能被解析 = 成功；退出码只作参考。
+  try {
+    const srcText = (() => {
+      try {
+        const p = path.resolve(HERE, String(src[0]));
+        return fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : String(src[0]);
+      } catch { return String(src[0]); }
+    })();
+    const tgt = detectTarget(srcText);
+    const landed = selfLanded(tgt, __t0, { minBytes: 8 });   // 小文件也是产物：能不能用交给语法闸判断
+    let outcome;
+    if (!landed) {
+      outcome = { verdict: 'failed', landed: [], verified: [], hint: '盘上没有产物' };
+    } else {
+      const ext = path.extname(String(landed.path)).toLowerCase();
+      const checkable = ['.mjs', '.js', '.cjs'].includes(ext);
+      let okSyntax = true;
+      if (checkable) {
+        const chk = spawnSync(process.execPath, ['--check', String(landed.path)], { cwd: HERE, encoding: 'utf8' });
+        okSyntax = chk.status === 0;
+      }
+      const verified = checkable ? [{ path: landed.path, syntax: okSyntax }] : [];
+      outcome = okSyntax
+        ? { verdict: 'ok', landed: [landed], verified, hint: '' }
+        : { verdict: 'partial', landed: [landed], verified, hint: '产物落下了但语法没过，重跑或直接修它' };
+    }
+    RESULT.data.outcome = outcome;
+    const mark = outcome.verdict === 'ok' ? '✓' : (outcome.verdict === 'partial' ? '~' : '✗');
+    console.log(mark + ' 结果：' + outcome.verdict + '（看产物，不看退出码）');
+    if (landed) console.log('  产物：' + landed.path + ' ' + landed.size + 'B');
+    if (outcome.hint) console.log('  下一步：' + outcome.hint);
+  } catch (e) {
+    RESULT.data.outcome = { verdict: code === 0 ? 'ok' : 'failed', landed: [], verified: [], hint: '产物判定没跑成：' + String(e && e.message).slice(0, 60) };
+  }
+if (RESULT.data.outcome && RESULT.data.outcome.verdict === 'ok') return EXIT.ok;
   return code;
 }
 
@@ -588,6 +630,17 @@ function cmdCheck(args) {
 //
 // 分档沿用 chat analysis 的定义：z 截断 ±3 → meanZ → strength×agreement×nValid
 // → >=0.45 可判 / >=0.22 存疑 / <0.22 别判。改 vm/judge.mjs 的 CUT 会同时改这里。
+
+// 判定凭证落账：--attest 时把 (程序, 输入, 输出, hash) 记进 memory/attest-judge.jsonl。
+function judgeWithLedger(J, input = {}, opts = {}) {
+  const withAttest = process.argv.includes('--attest');
+  const r = J.judge(input, { ...opts, withAttest });
+  if (withAttest && r && r.attestation) {
+    try { appendAttestation(path.resolve(HERE, 'memory/attest-judge.jsonl'), r.attestation); }
+    catch (e) { console.error('! 判定凭证没写成：' + String(e.message).slice(0, 60)); }
+  }
+  return r;
+}
 async function cmdJudge(args) {
   // 参数分四组：判什么（--z / --input / --votes）、期望指标数（--expect）、
   // 走不走网络（--remote / --url / --timeout）、其余当开关位。
@@ -695,7 +748,7 @@ async function cmdJudge(args) {
       };
     } else {
       const J = await import('./vm/judge.mjs');
-      r = { ...J.judge({ zValues, expected }), source: 'local' };
+      r = { ...judgeWithLedger(J, { zValues, expected }), source: 'local' };
     }
     const st = r.details ? r.details.stats : {};
     const label = r.value === 1 ? '可判（数据够下结论）' : (r.value === 0 ? '存疑（能看出方向，但别当结论用）' : '别判（这批数据下不了结论）');
@@ -729,6 +782,28 @@ async function cmdJudge(args) {
     return EXIT.precondition;
   }
 }
+async function cmdAttest(args) {
+  // 日常用法：改完代码扫一遍，看哪些凭证失效了。
+  const fileLedger = path.resolve(HERE, 'memory/attest.jsonl');
+  const judgeLedger = path.resolve(HERE, 'memory/attest-judge.jsonl');
+  const files = readAttestations(fileLedger);
+  const res = auditAttestations(files, { cwd: HERE });
+  let judge = { checked: 0, ok: 0, bad: [] };
+  const jEntries = readAttestations(judgeLedger);
+  if (jEntries.length) {
+    const { verifyAttestation } = await import('./vm/attest.mjs');
+    judge.checked = jEntries.length;
+    for (const e of jEntries) {
+      const v = verifyAttestation(e);
+      if (v.ok) judge.ok += 1; else judge.bad.push({ file: 'judge', reason: v.reason });
+    }
+  }
+  console.log(formatAudit(res));
+  if (judge.checked) console.log(`判定凭证：共 ${judge.checked} 份，可重算 ${judge.ok}，失效 ${judge.bad.length}`);
+  if (RESULT && RESULT.data) RESULT.data.attest = { files: res, judge };
+  return (res.failed.length + judge.bad.length) ? EXIT.accept : EXIT.ok;
+}
+
 function cmdState() {
   const list = listTasks();
   if (!list.length) {
@@ -981,6 +1056,18 @@ function cmdDone(args) {
 
   // 收工写状态：只改 task.json 一处。
   // 注意 dirRel 之前根本没声明过 —— 沿用旧版本残留变量名会让「成功收工」这条路径必崩（实测 ReferenceError）。
+  // 2026-11-16：验收通过后落一张可复算凭证（文件 sha256 + 大小 + 退出码 + 自洽 hash）。
+  // 失败不阻断收工 —— 凭证是证据，不是闸门；但它一旦存在，文件被改就能被查出来。
+  let attest = null;
+  try {
+    const rel = Array.isArray(t.relatedFiles) ? t.relatedFiles : [];
+    if (rel.length) {
+      const r = attestFiles({ task: t.id || path.basename(t.dir || ''), files: rel, acceptExit: 0, ledger: path.resolve(HERE, 'memory/attest.jsonl') });
+      attest = { count: r.count, appended: r.appended, ledger: 'memory/attest.jsonl' };
+      if (r.count) console.log(`  验收凭证：${r.count} 份已落 memory/attest.jsonl`);
+      try { if (typeof RESULT !== 'undefined' && RESULT && RESULT.data) RESULT.data.attest = attest; } catch {}
+    }
+  } catch (e) { console.log('  ! 凭证没写成：' + String(e.message).slice(0, 60)); }
   const dirRel = path.relative(HERE, t.dir).replace(/\\/g, '/');
   const st = py(['.atw/scripts/task.py', 'set-status', dirRel, 'completed'], { capture: true });
   if (st.code !== 0) return die('改状态失败：' + ((st.err || st.out || '').trim().slice(0, 400)));
@@ -1175,11 +1262,12 @@ if (JSON_MODE) {
 }
 
 const cmdFanout = makeFanoutVerb({ EXIT, RESULT, HERE, die, activeTask });
+const cmdArmy = makeArmyVerb({ EXIT, RESULT, HERE, die, activeTask });
 
 const bareCall = !process.argv[2];
 const verb = String(process.argv[2] || '__bare').toLowerCase();
 const rest = process.argv.slice(3).filter((a) => a !== '--json');
-const table = { doctor: cmdDoctor, should: cmdShould, gate: cmdGate, try: cmdTry, new: cmdNew, batch: cmdBatch, go: cmdGo, check: cmdCheck, diff: cmdDiff, judge: cmdJudge, fanout: cmdFanout, done: cmdDone, state: cmdState, mode: cmdMode, raw: cmdRaw };
+const table = { doctor: cmdDoctor, should: cmdShould, gate: cmdGate, try: cmdTry, new: cmdNew, batch: cmdBatch, go: cmdGo, check: cmdCheck, diff: cmdDiff, judge: cmdJudge, attest: cmdAttest, army: cmdArmy, fanout: cmdFanout, done: cmdDone, state: cmdState, mode: cmdMode, raw: cmdRaw };
 
 /** 打印规格：人读走 stdout，机器读塞进 RESULT.data（由统一收尾出 JSON）。 */
 function printSpec(target) {
@@ -1245,7 +1333,7 @@ if (verb === 'caps' || verb === 'spec' || verb === 'capabilities') {
         const v = VERBS[verb];
         if (verb === 'go') {
           args = args.map((a) => (a === '--dry-run' ? '--plan' : a));
-        } else if (verb === 'fanout') {
+        } else if (verb === 'fanout' || verb === 'army') {
           // fanout-cli 自己认 --dry-run
         } else if (v.cost === 'spawn') {
           code = die('atwo ' + verb + ' 还不支持 --dry-run：它会在你确认前就派活。\n要么去掉这个参数直接跑，要么改用 atwo fanout "<任务>" --dry-run 先验一遍。', EXIT.usage);
