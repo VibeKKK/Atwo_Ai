@@ -13,12 +13,12 @@ function makeAsk() {
       seen.reviewPrompts.push(prompt);
       const n = seen.reviewPrompts.length;
       if (n === 1) {
-        return { ok: true, addedText: '[{"id":"child-1","verdict":"PASS","reason":"对，行号可核对"},{"id":"child-2","verdict":"REVISE","reason":"漏了 budget=6"},{"id":"child-3","verdict":"PASS","reason":"对"}]' };
+        return { ok: true, addedText: '[{"id":"child-1","verdict":"PASS","reason":"对，行号可核对"},{"id":"child-2","verdict":"REVISE","reason":"atwo.mjs:190 的 EXIT 里 budget 是 6，产物漏了"},{"id":"child-3","verdict":"PASS","reason":"对"}]' };
       }
       return { ok: true, addedText: '[{"id":"child-1","verdict":"PASS","reason":"对"},{"id":"child-2","verdict":"PASS","reason":"已补 budget=6，实读核对"},{"id":"child-3","verdict":"PASS","reason":"对"}]' };
     }
     seen.childPrompts.push(prompt);
-    if (/漏了 budget=6/.test(prompt)) {
+    if (/budget 是 6，产物漏了/.test(prompt)) {
       return { ok: true, addedText: 'ANSWER:\n六个，含 budget=6\nEVIDENCE:\natwo.mjs:190' };
     }
     if (/这是第 2 \//.test(prompt)) {
@@ -39,7 +39,8 @@ await it('fixRounds=1：被判 REVISE 的子会话带批注重做，第二轮转
   assert.equal(retried.length, 1, '只有 child-2 被重做');
   assert.equal(retried[0].id, 'child-2');
   assert.equal(retried[0].prevAnswer.includes('五个'), true, '重做的那条要留着上一轮的答案，便于复判');
-  assert.ok(seen.childPrompts.some((p) => /漏了 budget=6/.test(p)), '父的批注必须真的注入子提示');
+  // 批注里带的是父审原文（现在父审必须给「文件:行」），所以按新文案断言
+  assert.ok(seen.childPrompts.some((p) => /产物漏了/.test(p) && /atwo\.mjs:190/.test(p)), '父的批注必须真的注入子提示');
 });
 
 await it('fixRounds=0（默认）：判了 REVISE 也不重做，不偷偷多花钱', async () => {
@@ -61,7 +62,7 @@ await it('全 PASS 时不进自愈回路（省一次全量重派）', async () =
 
 await it('重做后仍判 REVISE 时，汇总跟着第二轮走（不虚报通过）', async () => {
   const ask = async (prompt) => /你是父会话/.test(prompt)
-    ? { ok: true, addedText: '[{"id":"child-1","verdict":"PASS","reason":"ok"},{"id":"child-2","verdict":"REVISE","reason":"还是错"},{"id":"child-3","verdict":"PASS","reason":"ok"}]' }
+    ? { ok: true, addedText: '[{"id":"child-1","verdict":"PASS","reason":"ok"},{"id":"child-2","verdict":"REVISE","reason":"还是错：atwo.mjs:190 的 budget 应为 6"},{"id":"child-3","verdict":"PASS","reason":"ok"}]' }
     : { ok: true, addedText: 'ANSWER:\nA\nEVIDENCE:\natwo.mjs:190' };
   const res = await runFanout({ task: 'q', parts: 3, cwd: process.cwd(), fixRounds: 1, ask });
   assert.equal(res.elapsed.rounds, 2);
