@@ -25,7 +25,7 @@
 
 import http from 'node:http';
 import { pathToFileURL } from 'node:url';
-import { judge, CUT, Z_LIMIT } from './judge.mjs';
+import { judge, CUT, Z_LIMIT, CONTRACT } from './judge.mjs';
 import { judgeVotes, parseVote } from './votes.mjs';
 
 export const SERVICE = 'ternary-oracle';
@@ -120,7 +120,8 @@ export function createServer(opts = {}) {
       if (route === '/health' && req.method === 'GET') {
         return send(res, 200, {
           ok: true, service: SERVICE, version: VERSION, engine: 'node', uptimeMs: Date.now() - startedAt,
-          cut: CUT, zLimit: Z_LIMIT, endpoints: ['/health', '/judge', '/votes'],
+          contractVersion: CONTRACT.contractVersion,
+          cut: CUT, zLimit: Z_LIMIT, votesArity: CONTRACT.votesArity, endpoints: ['/health', '/judge', '/votes'],
         });
       }
 

@@ -23,6 +23,8 @@
  */
 
 import fs from 'node:fs';
+import { compileVerdict, runVerdict } from './verdict.mjs';
+import { makeAttestation } from './attest.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { NODE, compile, runWithCompiler } from './compiler.mjs';
@@ -49,6 +51,8 @@ function loadContract() {
     return n;
   };
   return {
+    // 契约版本也要带出来：跨主机核对时这是第一个要比的字段（Kali 那份落后一版就靠它发现）。
+    contractVersion: raw?.contractVersion == null ? null : Number(raw.contractVersion),
     cut: { high: need(raw?.cut?.high, 'cut.high'), mid: need(raw?.cut?.mid, 'cut.mid') },
     zLimit: need(raw?.zLimit, 'zLimit'),
     spreadEps: need(raw?.spreadEps, 'spreadEps'),
@@ -62,6 +66,9 @@ export const CONTRACT = loadContract();
 
 /** 分档阈值 —— 从契约读。改这里等于改 AST 与 verdictOf 两处，因为它们都引用本对象。 */
 export const CUT = { high: CONTRACT.cut.high, mid: CONTRACT.cut.mid };
+
+/** 裁决真程序（模块级缓存）：判定规则两档阈值 + 脱钩保护编成字节码，只编译一次。 */
+const VERDICT_PROGRAM = compileVerdict(CUT);
 
 /** z 的截断上限。延迟倍率这类指标能算出 -180，不截断就不是同一个问题。 */
 export const Z_LIMIT = CONTRACT.zLimit;
@@ -192,14 +199,29 @@ export function decisionAst(confidence) {
 const REASON = { 1: '可判', 0: '存疑', '-1': '别判' };
 
 /**
- * 判定入口：现算一份，编译执行一份，两者必须相同。
- * @param {{zValues?:number[], z?:number[], expected?:number, sources?:string[]}} input
- * @returns {{value:number, confidence:number, reason:string, details:object}}
+ * 判定入口：现算一份，编译执行一份，裁决真程序跑一份，三者必须一致。
+ *
+ * value 一律出自 runVerdict —— 判定规则（两档阈值 + 脱钩保护）本身是
+ * vm/verdict.mjs 编出的字节码、由 machine 真执行，宿主不再用 if-else 算 value。
+ * 旧 AST 路径降级为第二重对照（details.compiled / steps / halted 语义不变）。
+ *
+ * @param {{zValues?:number[], z?:number[], expected?:number, sources?:string[], withAttest?:boolean}} input
+ * @param {{withAttest?:boolean}} [opts]  withAttest=true 时生成可复算凭证 attestation
+ * @returns {{value:number, confidence:number, reason:string, details:object,
+ *            programSteps:number, attestation?:object}}
  */
-export function judge(input = {}) {
+export function judge(input = {}, opts = {}) {
   const zValues = Array.isArray(input.zValues) ? input.zValues : (Array.isArray(input.z) ? input.z : []);
   const stats = computeConfidence(zValues, { expected: input.expected, sources: input.sources });
   const direct = verdictOf(stats.confidence);
+
+  // 裁决真程序：value 一律出自 machine 的执行结果（含 VM 内脱钩保护）。
+  const vr = runVerdict(VERDICT_PROGRAM.program, {
+    meanZ: stats.meanZ,
+    agreement: stats.agreement,
+    nValid: stats.nValid,
+  });
+
   const program = compile(decisionAst(stats.confidence));
   const run = runWithCompiler(program);
   const details = {
@@ -210,14 +232,25 @@ export function judge(input = {}) {
     halted: run.halted,
     programLength: program.length,
     zCount: zValues.length,
+    verdictProgramLength: VERDICT_PROGRAM.program.length,
   };
 
-  if (run.value !== direct) {
-    return { value: 0, confidence: stats.confidence, reason: 'compiler-mismatch', details };
+  if (run.value !== direct || vr.value !== direct) {
+    return { value: 0, confidence: stats.confidence, reason: 'compiler-mismatch', details, programSteps: vr.steps };
   }
   if (run.value === 1 && stats.meanZ === 0) {
     // 硬约束：完全脱钩（所有 z 都被截成 0）绝不许返回 +1。
-    return { value: -1, confidence: stats.confidence, reason: 'decoupled-guard', details };
+    // 真实判定流里 meanZ=0 必然 confidence=0、到不了高档，这里是双保险的对照位。
+    return { value: -1, confidence: stats.confidence, reason: 'decoupled-guard', details, programSteps: vr.steps };
   }
-  return { value: run.value, confidence: stats.confidence, reason: REASON[run.value], details };
+  const out = { value: vr.value, confidence: stats.confidence, reason: REASON[vr.value], details, programSteps: vr.steps };
+  if (input.withAttest === true || (opts && opts.withAttest === true)) {
+    out.attestation = makeAttestation({
+      program: VERDICT_PROGRAM.program,
+      inputs: { meanZ: stats.meanZ, agreement: stats.agreement, nValid: stats.nValid },
+      output: { value: vr.value },
+      contract: CONTRACT,
+    });
+  }
+  return out;
 }

@@ -18,12 +18,23 @@
  */
 
 import { judge, CUT, VOTE_ARITY } from './judge.mjs';
+import { compileVotes, runVotesVerdict } from './verdict.mjs';
 
 /** 认可的三种票面写法（大小写不敏感）。 */
 export const VOTE = { accept: 'ACCEPT', revise: 'REVISE', none: 'unreviewed' };
 
 /** 到票率下限，来自契约（votes.arity）。这里只是转出口，不许写死 0.8。 */
 export const ARITY = VOTE_ARITY;
+
+// 票面决议程序：模块级编译一次，阈值只从契约来（与 judge 的 VERDICT_PROGRAM 同构）。
+const VOTES_PROGRAM = compileVotes({ high: CUT.high, mid: CUT.mid, arity: ARITY });
+
+/** 票面程序长度（给测试与 --json 用，证明 value 真的走过 VM）。 */
+export const VOTES_PROGRAM_LENGTH = VOTES_PROGRAM.program.length;
+/** 票面决议的 VM 重算入口（测试可直接拿它与 judgeVotes 对拍）。 */
+export function votesTriFromVm(confidence, rate) {
+  return runVotesVerdict(VOTES_PROGRAM, { confidence, rate });
+}
 
 /**
  * 归一化一张票。
@@ -126,6 +137,19 @@ export function judgeVotes(input = {}) {
     reasonText = r.value === 1 ? null : (r.reason || null);
   }
 
+  // 第二重对照：把「置信度分档 × 到票门」的合成编成字节码，由 machine 真执行一遍。
+  // 比的是最终 value（合成结果），不是某个中间量：门不过时 +1 要降级成 0，
+  // 零票时的 -1 要保留 —— 这两条一旦写反，结论会静默变成「放行」。
+  const vmRate = rosterMissing ? 0 : turnout;
+  const vm = votesTriFromVm(r.confidence, vmRate);
+  const vmAgrees = vm.value === value;
+  if (!vmAgrees) {
+    reasonText = '票面程序与代码算出的决议不一致（vm ' + vm.value + ' / code ' + value + '）：按证据不足处理';
+    value = 0;
+    state = 'unreviewed';
+    reason = 'votes-mismatch';
+  }
+
   return {
     value,
     state,
@@ -133,6 +157,7 @@ export function judgeVotes(input = {}) {
     confidence: Number(r.confidence),
     reason,
     reasonText,
+    votesProgram: { value: vm.value, steps: vm.steps, length: VOTES_PROGRAM_LENGTH, agrees: vmAgrees },
     turnout,
     arity: ARITY,
     cut: { high: CUT.high, mid: CUT.mid },

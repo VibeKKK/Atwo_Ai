@@ -244,7 +244,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/health":
             return self._send(200, {"ok": True, "service": "ternary-oracle", "version": VERSION,
                                     "engine": "python", "uptimeMs": int((time.time() - STARTED) * 1000),
+                                    "contractVersion": CONTRACT.get("contractVersion"),
                                     "cut": {"high": CUT_HIGH, "mid": CUT_MID}, "zLimit": Z_LIMIT,
+                                    "votesArity": (CONTRACT.get("votes") or {}).get("arity"),
                                     "endpoints": ["/health", "/judge", "/votes"]})
         if path == "/judge":
             raw = query.get("z", "")

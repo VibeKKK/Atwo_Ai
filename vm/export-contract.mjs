@@ -24,7 +24,27 @@ import { judge, CUT, Z_LIMIT, VOTE_ARITY } from './judge.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
-/** 参考向量：覆盖分档边界、脱钩、单值、方向打架、重复读数五类。 */
+/**
+ * 造一条「贴线」向量：九个独立来源，读数围绕某个 meanZ 微抖。
+ * 为什么需要（2026-11-16 补洞）：原来的 9 组向量离分档线都太远，
+ * 把契约 cut.high 从 0.45 改成 0.50，judge 的 value 一个都不翻，
+ * 于是 vm-smoke 照样全绿 —— 闸门又一次替被改的阈值背书。
+ * 修法：在每条线上下各钉一条 confidence≈line±0.01 的向量，
+ * 阈值一动，它的 value 必然翻，smoke 立刻红。
+ * 数学：九个来源、微抖 → agreement≈1、nValid=1，故 confidence≈tanh(|meanZ|)，
+ * 于是 meanZ = atanh(目标置信度)。抖动取 ±4e-4（对称，均值不变）。
+ */
+const atanh = (x) => 0.5 * Math.log((1 + x) / (1 - x));
+const JITTER = [-4e-4, -3e-4, -2e-4, -1e-4, 0, 1e-4, 2e-4, 3e-4, 4e-4];
+export function boundaryVector(conf, label) {
+  const m = atanh(conf);
+  return {
+    name: '贴线·' + label,
+    zValues: JITTER.map((d, i) => ({ z: Number((m + d).toFixed(9)), source: 'b' + (i + 1) })),
+  };
+}
+
+/** 参考向量：覆盖分档边界、脱钩、单值、方向打架、重复读数、贴线六类。 */
 export const VECTORS = [
   { name: '强证据·九项独立', zValues: [3.1, 2.9, 3.4, 2.8, 3.0, 3.2, 2.7, 3.3, 3.1] },
   { name: '全零·脱钩', zValues: [0, 0, 0, 0, 0, 0, 0, 0, 0] },
@@ -43,12 +63,18 @@ export const VECTORS = [
     ],
   },
   { name: '退化·单值三点', zValues: [1.0] },
+  // 四条贴线向量：专门抓「契约阈值被改」这类静默失效（见 boundaryVector 注释）。
+  boundaryVector(0.46, '高线上方（应可判）'),
+  boundaryVector(0.44, '高线下方（应存疑）'),
+  boundaryVector(0.23, '中线上方（应存疑）'),
+  boundaryVector(0.21, '中线下方（应别判）'),
 ];
 
 export function buildContract() {
   return {
     service: 'ternary-oracle',
-    contractVersion: 2,
+    // v3（2026-11-16）：新增四条贴线向量，让 vm-smoke 能抓住阈值被改。
+    contractVersion: 3,
     generatedBy: 'vm/export-contract.mjs',
     // 这几个数只在这里出现一次；python 侧必须读它们，不许自己写 0.45 / 0.22 / 0.8。
     cut: { high: CUT.high, mid: CUT.mid },

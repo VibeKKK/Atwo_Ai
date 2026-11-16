@@ -24,10 +24,14 @@ import { quotaRecord, appendQuota } from './lib/quota-log.mjs';
 import { selfLanded, detectTarget } from './lib/land.mjs';
 import { makeFanoutVerb } from './lib/fanout-cli.mjs';
 import { makeArmyVerb } from './lib/army-cli.mjs';
+import { makeTriageVerb } from './lib/triage-cli.mjs';
 import { VERBS, GLOBAL_FLAGS, EXIT_CODES, LIMITS, isHelp, checkFlags, positional, specOf, formatSpec, capsJson, valueFlagsOf } from './lib/cli-spec.mjs';
 import { detectEnvironment, quickSelfCheck } from './lib/bootstrap.mjs';
 import { shouldDelegate, formatShould } from './lib/should.mjs';
 import { runGate, formatGate } from './lib/gate.mjs';
+import { judgeOutcome, formatOutcome, exitForOutcome, judgeStall } from './lib/outcome.mjs';
+import { pitfallRecord, appendPitfall, readPitfalls, matchPitfalls, renderPitfalls } from './lib/pitfalls.mjs';
+import { scoreRecord, appendScore, readScore, summarizeScores, dailyTrend, delta } from './lib/score.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 // 三个环境变量是测试缝（与 ATWO_TASKS_DIR 同一个理由）：测试要造「日志不可写」「假 orchestra」，
@@ -39,6 +43,8 @@ const TASK_PY = path.join(ATW, 'scripts', 'task.py');
 const TASKS_DIR = process.env.ATWO_TASKS_DIR || path.join(ATW, 'tasks');
 const ACCEPT = path.join(HERE, 'packages', 'accept', 'bin', 'accept.mjs');
 const LOG = process.env.ATWO_LOG || path.join(HERE, 'memory', 'log.jsonl');
+const SCORE_LOG = process.env.ATWO_SCORE || path.join(HERE, 'memory', 'score.jsonl');
+const PITFALL_LOG = process.env.ATWO_PITFALL || path.join(HERE, 'memory', 'pitfalls.jsonl');   // 坑账本：同一个坑不要修第二遍   // 验收分数账本：同名断言最近有没有变好
 const MODE_FILE = process.env.ATWO_MODE_FILE || path.join(ATW, 'mode.json');
 
 const STAGE = {
@@ -94,6 +100,8 @@ function orchestraSupervised(argv, opts = {}) {
     let sawReview = false;
     let aborted = false;
     let abortReason = '';
+    let lastOutputAt = 0;      // 最后一次有输出的时刻：judgeStall 靠它算「卡了多久」
+    let stallNoted = false;    // 卡住只提示一次，别每秒刷屏
 
     const child = spawn(process.execPath, [ORCH, ...argv], {
       cwd: HERE,
@@ -125,6 +133,7 @@ function orchestraSupervised(argv, opts = {}) {
     const handleLine = (line) => {
       if (!line.trim()) return;
       lastLine = line;
+      lastOutputAt = Date.now();
       // 颜色码会把「✓ #1 xxx」拆成 ✓+ESC+#…，直接拿原文匹配会一条都认不出来（实测 0/0 路成功）。
       const plain = line.replace(/\u001b\[[0-9;]*m/g, '');
       const kind = classifyLine(plain);
@@ -138,6 +147,29 @@ function orchestraSupervised(argv, opts = {}) {
 
     const checkAbort = () => {
       if (aborted) return;
+      // P0-2 停顿判定：20 秒没有新输出就告诉人一声（默认不中止，产物优先兜底）
+      // 想要真中止就设 ATWO_STALL_ABORT_MS（毫秒），比如 45000。
+      // 一直没输出时，基准必须是「开始时刻」而不是 0 —— 否则静默挂死永远不算卡（实测漏判）
+      const st = judgeStall({ lastOutputAt: lastOutputAt || startedAt, now: Date.now() });
+      if (st.stalled && !stallNoted) {
+        stallNoted = true;
+        RESULT.data.stall = { idleMs: st.idleMs, stallMs: st.stallMs };
+        if (!JSON_MODE) {
+          process.stdout.write('\n' + progressLine({ elapsedMs: Date.now() - startedAt, text: '⏳ ' + st.text }) + '\n');
+        }
+      }
+      const hard = Number(process.env.ATWO_STALL_ABORT_MS) || 0;
+      if (hard > 0 && st.idleMs >= hard) {
+        aborted = true;
+        abortReason = '卡住 ' + Math.round(st.idleMs / 1000) + 's 没有新输出';
+        if (!JSON_MODE) {
+          process.stdout.write('\n' + progressLine({ elapsedMs: Date.now() - startedAt, text: '⛔ ' + abortReason + ' —— 提前收尾' }) + '\n');
+        }
+        child.kill('SIGTERM');
+        const f2 = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* 已退 */ } }, 3000);
+        if (f2.unref) f2.unref();
+        return;
+      }
       const d = decideAbort({
         elapsedMs: Date.now() - startedAt,
         deadlineMs,
@@ -185,7 +217,7 @@ function orchestraSupervised(argv, opts = {}) {
       else if (s.total === 0) text = '完成 · 用时 ' + (elapsedMs / 1000).toFixed(1) + 's';
       else text = s.text;
       if (!JSON_MODE) process.stdout.write('\n' + progressLine({ elapsedMs, text }) + '\n');
-      RESULT.data.run = { channels, elapsedMs, aborted };
+      RESULT.data.run = { channels, elapsedMs, aborted, stalled: stallNoted };
       if (aborted) return resolve(EXIT.channel);
       resolve(code == null ? EXIT.channel : code);
     });
@@ -451,6 +483,23 @@ async function cmdGo(args) {
   const { val: sizeRaw, rest: rest1 } = takeOpt(args, '--size');
   // --plan 只算参数不派活：四路全上的 crazy 真跑一次几分钟，验证档位不该花这个钱
   const planOnly = rest1.includes('--plan');
+  // 坑账本：按任务文本（PRD + 参数）匹配已知坑，派活前先说清楚
+  const pitfallHits = (() => {
+    try {
+      const cands = rest1.filter((a) => !a.startsWith('--'));
+      let prdText = '';
+      for (const c of cands) {
+        try {
+          if (fs.existsSync(c) && fs.statSync(c).isFile()) { prdText = fs.readFileSync(c, 'utf8'); break; }
+        } catch { /* 忽略单个候选 */ }
+      }
+      return matchPitfalls(readPitfalls(PITFALL_LOG), prdText + ' ' + rest1.join(' '));
+    } catch { return []; }
+  })();
+  if (pitfallHits.length > 0) {
+    for (const line of renderPitfalls(pitfallHits)) console.log(line);
+    RESULT.data.pitfalls = pitfallHits.map((r) => r.trigger);
+  }
   const src = rest1.filter((a) => !a.startsWith('--'));
   // --agent 不透传：路数由档位决定。放行它会让「本次：N 路」这行打印与真实参数对不上，
   // 而用户唯一能核对的就是那行（PRD R6）。
@@ -483,9 +532,25 @@ async function cmdGo(args) {
   if (!SIZE_PLAN[size]) size = 'M';
 
   const plan = mode.name === 'crazy' ? CRAZY_PLAN : SIZE_PLAN[size];
-  const lanes = plan.lanes || ALL_LANES;
+  // 2026-11-16：--agent 允许显式指定，而且必须让下面的「本次：N 路」跟着变
+  const { val: agentRaw } = takeOpt(rest1, '--agent');
+  let lanes = plan.lanes || ALL_LANES;
+  if (agentRaw) {
+    const picked = String(agentRaw).split(',').map((x) => x.trim()).filter(Boolean);
+    const bad = picked.filter((x) => !ALL_LANES.includes(x));
+    if (bad.length) return die('--agent 只支持 ' + ALL_LANES.join(' / ') + '（收到 ' + bad.join(',') + '）');
+    if (!picked.length) return die('--agent 后面要写通道名：' + ALL_LANES.join(' / '));
+    lanes = picked;
+  }
 
   const env = {};
+  // 2026-11-16 修：超时基线必须无条件下发。以前只在 crazy 档里注入，
+  // 于是 strict / S / off 档 ORCH_TIMEOUT_CODEBUDDY=300000 从没到达 orchestra 子进程，
+  // 日志里仍是老的 180s —— 两次「300s 阈值没生效」的真根因就在这里。
+  for (const [k, d] of Object.entries(DEFAULT_TIMEOUTS)) {
+    const cur = process.env[k] ? Number(process.env[k]) : d;
+    env[k] = String(Math.round(mode.name === 'crazy' ? cur * 1.5 : cur));
+  }
   if (mode.name === 'crazy') {
     // 缓存命中意味着这一路没有真的重做一遍；上一轮被污染的产物缓存下来，crazy 也救不回来
     env.ORCH_NO_CACHE = '1';
@@ -515,7 +580,14 @@ async function cmdGo(args) {
   console.log('▶ 档位：' + mode.name + (mode.name === 'strict' ? ' · ' + size : '') + ' · ' + mode.label);
   console.log('▶ 本次：' + lanes.length + ' 路（' + lanes.join(', ') + '）· 验收五层 · '
     + (plan.review > 0 ? '评审 ' + plan.review + ' 个' : '不评')
+    + (agentRaw ? ' · 显式 --agent' : '')
     + (mode.name === 'crazy' ? ' · 超时 ×1.5 · 禁缓存' : ''));
+
+  console.log('▶ 超时：' + Object.entries(env)
+    .filter(([k]) => k.startsWith('ORCH_TIMEOUT_'))
+    .map(([k, v]) => k.replace('ORCH_TIMEOUT_', '').toLowerCase() + ' ' + Math.round(Number(v) / 1000) + 's')
+    .join(' · ')
+    + (mode.name === 'crazy' ? '（crazy 已 ×1.5）' : ''));
 
   if (planOnly) {
     console.log(renderTierLine(tier));
@@ -571,9 +643,8 @@ async function cmdGo(args) {
     console.log('! 额度账本写入失败：' + (e && e.message ? e.message : String(e)));
   }
   
-  // ——— P0-1 产物优先 ———
+  // ——— P0-1 产物优先（判据只有一份：lib/outcome.mjs，go / swarm / army 共用）———
   // 一个工具可以慢、可以笨，但不能「说失败了东西其实在」、也不能「说成功而东西没了」。
-  // 所以：产物在盘上 + 能被解析 = 成功；退出码只作参考。
   try {
     const srcText = (() => {
       try {
@@ -581,34 +652,22 @@ async function cmdGo(args) {
         return fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : String(src[0]);
       } catch { return String(src[0]); }
     })();
-    const tgt = detectTarget(srcText);
-    const landed = selfLanded(tgt, __t0, { minBytes: 8 });   // 小文件也是产物：能不能用交给语法闸判断
-    let outcome;
-    if (!landed) {
-      outcome = { verdict: 'failed', landed: [], verified: [], hint: '盘上没有产物' };
-    } else {
-      const ext = path.extname(String(landed.path)).toLowerCase();
-      const checkable = ['.mjs', '.js', '.cjs'].includes(ext);
-      let okSyntax = true;
-      if (checkable) {
-        const chk = spawnSync(process.execPath, ['--check', String(landed.path)], { cwd: HERE, encoding: 'utf8' });
-        okSyntax = chk.status === 0;
-      }
-      const verified = checkable ? [{ path: landed.path, syntax: okSyntax }] : [];
-      outcome = okSyntax
-        ? { verdict: 'ok', landed: [landed], verified, hint: '' }
-        : { verdict: 'partial', landed: [landed], verified, hint: '产物落下了但语法没过，重跑或直接修它' };
-    }
+    const outcome = judgeOutcome({ srcText, sinceMs: __t0, cwd: HERE });
     RESULT.data.outcome = outcome;
-    const mark = outcome.verdict === 'ok' ? '✓' : (outcome.verdict === 'partial' ? '~' : '✗');
-    console.log(mark + ' 结果：' + outcome.verdict + '（看产物，不看退出码）');
-    if (landed) console.log('  产物：' + landed.path + ' ' + landed.size + 'B');
-    if (outcome.hint) console.log('  下一步：' + outcome.hint);
+    // 每次 go 落一条分数：这条记录才是「同批活有没有变好」的依据，不靠人记。
+    try {
+      appendScore(SCORE_LOG, scoreRecord({
+        task: (t && t.id) ? t.id : String(src[0] || ''),
+        assertion: 'go.outcome',
+        ok: outcome.verdict === 'ok',
+      }));
+    } catch { /* 落账失败不影响派活结果 */ }
+    for (const line of formatOutcome(outcome)) console.log(line);
   } catch (e) {
-    RESULT.data.outcome = { verdict: code === 0 ? 'ok' : 'failed', landed: [], verified: [], hint: '产物判定没跑成：' + String(e && e.message).slice(0, 60) };
+    RESULT.data.outcome = { verdict: code === 0 ? 'ok' : 'failed', target: null, landed: [], verified: [], hint: '产物判定没跑成：' + String(e && e.message).slice(0, 60) };
   }
-if (RESULT.data.outcome && RESULT.data.outcome.verdict === 'ok') return EXIT.ok;
-  return code;
+return exitForOutcome(code, RESULT.data.outcome);
+  
 }
 
 function cmdCheck(args) {
@@ -782,6 +841,41 @@ async function cmdJudge(args) {
     return EXIT.precondition;
   }
 }
+/**
+ * score —— 验收分数趋势。
+ * 数据源只有 memory/score.jsonl（一行一次断言），不猜、不补。
+ * 用法：atwo score [--days 7] [--json]
+ */
+function cmdScore(args = []) {
+  const { val: daysRaw } = takeOpt(args, '--days');
+  const days = Math.max(1, Number(daysRaw) || 7);
+  const records = readScore(SCORE_LOG);
+  const sum = summarizeScores(records);
+  const trend = dailyTrend(records);
+  const d = delta(records, { days });
+  const rel = path.relative(HERE, SCORE_LOG).replace(/\\/g, '/');
+  RESULT.data.score = { total: sum.total, passed: sum.passed, rate: sum.rate, days, trend, delta: d };
+
+  if (records.length === 0) {
+    console.log('还没有分数记录：' + rel + ' 是空的。');
+    console.log('  第一次跑完 atwo go 之后就会自动落账。');
+    return EXIT.ok;
+  }
+
+  console.log('分数账本：' + rel + '（' + records.length + ' 条断言）');
+  console.log('  总计：通过 ' + sum.passed + ' / ' + sum.total + ' · 通过率 ' + sum.rate.toFixed(3));
+  if (trend.length > 0) {
+    console.log('  按天：');
+    for (const row of trend.slice(-10)) {
+      console.log('    ' + row.date + '  ' + row.passed + '/' + row.total + '  ' + row.rate.toFixed(3));
+    }
+  }
+  // direction=flat 有两种含义：真的持平，或前一段根本没有样本（此时 diff 不为 0，别拿箭头骗人）
+  const noBaseline = d.direction === 'flat' && d.delta !== 0;
+  const arrow = noBaseline ? '?' : (d.direction === 'up' ? '↑' : (d.direction === 'down' ? '↓' : '→'));
+  console.log('  近 ' + days + ' 天：' + arrow + ' ' + d.after.toFixed(3) + '（前一段 ' + d.before.toFixed(3) + '，差 ' + (d.delta >= 0 ? '+' : '') + d.delta.toFixed(3) + (noBaseline ? '；前一段没有样本，环比不可比' : '') + '）');
+  return EXIT.ok;
+}
 async function cmdAttest(args) {
   // 日常用法：改完代码扫一遍，看哪些凭证失效了。
   const fileLedger = path.resolve(HERE, 'memory/attest.jsonl');
@@ -804,6 +898,50 @@ async function cmdAttest(args) {
   return (res.failed.length + judge.bad.length) ? EXIT.accept : EXIT.ok;
 }
 
+function cmdPitfall(args = []) {
+  const sub = String(args[0] || '').toLowerCase();
+  const { val: triggerRaw, rest: r1 } = takeOpt(args.slice(sub === 'add' ? 1 : 0), '--trigger');
+  const { val: fixRaw, rest: r2 } = takeOpt(r1, '--fix');
+  const rel = path.relative(HERE, PITFALL_LOG).replace(/\\/g, '/');
+  const records = readPitfalls(PITFALL_LOG);
+  const usage = '用法：atwo pitfall add 「现象」 --trigger 「能被任务文本命中的短语」 [--fix 「修法」]';
+
+  if (sub === 'add') {
+    const lesson = r2.filter((a) => !a.startsWith('--')).join(' ').trim();
+    const trigger = String(triggerRaw || '').trim() || lesson.slice(0, 24);
+    if (!lesson) return die(usage);
+    let rec;
+    try {
+      rec = pitfallRecord({ trigger, lesson, fix: fixRaw || '' });
+    } catch (e) {
+      return die(String(e && e.message ? e.message : e));
+    }
+    try {
+      appendPitfall(PITFALL_LOG, rec);
+    } catch (e) {
+      return die('写坑账本失败：' + String(e && e.message ? e.message : e));
+    }
+    const after = readPitfalls(PITFALL_LOG).length;
+    console.log('已记一条坑：' + rec.trigger);
+    console.log('  现象：' + rec.lesson);
+    if (rec.fix) console.log('  修法：' + rec.fix);
+    console.log('  账本：' + rel + '（共 ' + after + ' 条）');
+    RESULT.data.pitfall = { added: rec.trigger, total: after };
+    return EXIT.ok;
+  }
+
+  RESULT.data.pitfall = { total: records.length, triggers: records.map((r) => r.trigger) };
+  if (records.length === 0) {
+    console.log('还没有坑记录：' + rel + ' 是空的。');
+    console.log('  ' + usage);
+    return EXIT.ok;
+  }
+  console.log('坑账本：' + rel + '（' + records.length + ' 条）');
+  for (const r of records) {
+    console.log('  · [' + r.trigger + '] ' + r.lesson + (r.fix ? '  → ' + r.fix : ''));
+  }
+  return EXIT.ok;
+}
 function cmdState() {
   const list = listTasks();
   if (!list.length) {
@@ -1263,11 +1401,12 @@ if (JSON_MODE) {
 
 const cmdFanout = makeFanoutVerb({ EXIT, RESULT, HERE, die, activeTask });
 const cmdArmy = makeArmyVerb({ EXIT, RESULT, HERE, die, activeTask });
+const cmdTriage = makeTriageVerb({ EXIT, RESULT, HERE, die });
 
 const bareCall = !process.argv[2];
 const verb = String(process.argv[2] || '__bare').toLowerCase();
 const rest = process.argv.slice(3).filter((a) => a !== '--json');
-const table = { doctor: cmdDoctor, should: cmdShould, gate: cmdGate, try: cmdTry, new: cmdNew, batch: cmdBatch, go: cmdGo, check: cmdCheck, diff: cmdDiff, judge: cmdJudge, attest: cmdAttest, army: cmdArmy, fanout: cmdFanout, done: cmdDone, state: cmdState, mode: cmdMode, raw: cmdRaw };
+const table = { doctor: cmdDoctor, should: cmdShould, gate: cmdGate, try: cmdTry, new: cmdNew, batch: cmdBatch, go: cmdGo, check: cmdCheck, diff: cmdDiff, judge: cmdJudge, attest: cmdAttest, score: cmdScore, pitfall: cmdPitfall, army: cmdArmy, triage: cmdTriage, fanout: cmdFanout, done: cmdDone, state: cmdState, mode: cmdMode, raw: cmdRaw };
 
 /** 打印规格：人读走 stdout，机器读塞进 RESULT.data（由统一收尾出 JSON）。 */
 function printSpec(target) {
