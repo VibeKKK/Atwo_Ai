@@ -23,6 +23,8 @@ import { quotaRecord, appendQuota } from './lib/quota-log.mjs';
 import { makeFanoutVerb } from './lib/fanout-cli.mjs';
 import { VERBS, GLOBAL_FLAGS, EXIT_CODES, LIMITS, isHelp, checkFlags, positional, specOf, formatSpec, capsJson, valueFlagsOf } from './lib/cli-spec.mjs';
 import { detectEnvironment, quickSelfCheck } from './lib/bootstrap.mjs';
+import { shouldDelegate, formatShould } from './lib/should.mjs';
+import { runGate, formatGate } from './lib/gate.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 // 三个环境变量是测试缝（与 ATWO_TASKS_DIR 同一个理由）：测试要造「日志不可写」「假 orchestra」，
@@ -1137,6 +1139,32 @@ async function cmdTry() {
   return r.ok ? EXIT.ok : EXIT.accept;
 }
 
+// ── should / gate ────────────────────────────────────────────────────────────
+async function cmdShould(args) {
+  const t = positional('should', args).join(' ').trim();
+  if (!t) {
+    console.error('要判什么？给一句话，比如：atwo should "把 lib/ 下 12 个文件的 import 统一改成 ESM"');
+    console.error('这一条没有派活、没有改任何东西。');
+    return EXIT.usage;
+  }
+  const r = shouldDelegate(t);
+  RESULT.data = r;
+  if (JSON_MODE) return EXIT.ok;
+  console.log(formatShould(r));
+  if (r.verdict === 'delegate') console.log('\n要真派：atwo fanout "' + t + '"');
+  return EXIT.ok;
+}
+
+async function cmdGate(args) {
+  const fi = args.indexOf('--files');
+  const files = (fi >= 0 ? String(args[fi + 1] || '') : '').split(/[,\s]+/).filter(Boolean);
+  const r = runGate({ files, skipTests: args.includes('--no-tests') });
+  RESULT.data = r;
+  if (JSON_MODE) return r.ok ? EXIT.ok : EXIT.accept;
+  console.log(formatGate(r));
+  return r.ok ? EXIT.ok : EXIT.accept;
+}
+
 // ─────────── 机器可读出口（操作者是 AI 时走这条）───────────
 // 人话一个字都不丢，但全部进 JSON 的 log 字段；stdout 只留最后那一个对象。
 const JSON_MODE = process.argv.includes('--json');
@@ -1153,7 +1181,7 @@ const cmdFanout = makeFanoutVerb({ EXIT, RESULT, HERE, die });
 const bareCall = !process.argv[2];
 const verb = String(process.argv[2] || '__bare').toLowerCase();
 const rest = process.argv.slice(3).filter((a) => a !== '--json');
-const table = { doctor: cmdDoctor, try: cmdTry, new: cmdNew, batch: cmdBatch, go: cmdGo, check: cmdCheck, diff: cmdDiff, judge: cmdJudge, fanout: cmdFanout, done: cmdDone, state: cmdState, mode: cmdMode, raw: cmdRaw };
+const table = { doctor: cmdDoctor, should: cmdShould, gate: cmdGate, try: cmdTry, new: cmdNew, batch: cmdBatch, go: cmdGo, check: cmdCheck, diff: cmdDiff, judge: cmdJudge, fanout: cmdFanout, done: cmdDone, state: cmdState, mode: cmdMode, raw: cmdRaw };
 
 /** 打印规格：人读走 stdout，机器读塞进 RESULT.data（由统一收尾出 JSON）。 */
 function printSpec(target) {
