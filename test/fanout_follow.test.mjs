@@ -36,7 +36,7 @@ it('notes.md 只有注释时不算追加（第一版把模板说明当 6 行指�
   const nf = path.join(dir, 'notes.md');
   fs.writeFileSync(nf, '<!-- 说明文字\n     任务：x\n     注释里的内容不会进父审 -->\n', 'utf8');
   const seen = [];
-  const fakeAsk = async () => ({ ok: true, addedText: 'ANSWER: ok\nEVIDENCE: e' });
+  const fakeAsk = async () => ({ ok: true, addedText: 'ANSWER: ok\nEVIDENCE: atwo.mjs:190' });
   const r = await runFanout({ task: 't', parts: 1, cwd: dir, ask: fakeAsk, notesPath: nf, onProgress: (e) => seen.push(e) });
   assert.equal(r.notes, '');
   assert.ok(!seen.some((e) => e.phase === 'notes'), '空批注不该触发 notes 事件');
@@ -48,7 +48,7 @@ it('notes.md 里真写了指令就被吸收，并广播 notes 事件', async () 
   const nf = path.join(dir, 'notes.md');
   fs.writeFileSync(nf, '<!-- 说明 -->\nchild-1 引用的 orch.mjs 不算证据\n', 'utf8');
   const seen = [];
-  const fakeAsk = async () => ({ ok: true, addedText: 'ANSWER: ok\nEVIDENCE: e' });
+  const fakeAsk = async () => ({ ok: true, addedText: 'ANSWER: ok\nEVIDENCE: atwo.mjs:190' });
   const r = await runFanout({ task: 't', parts: 1, cwd: dir, ask: fakeAsk, notesPath: nf, onProgress: (e) => seen.push(e) });
   assert.equal(r.notes, 'child-1 引用的 orch.mjs 不算证据');
   assert.ok(seen.some((e) => e.phase === 'notes'));
@@ -63,7 +63,7 @@ it('逐路回调：每一路回来就报一次，而不是等最慢那路', asyn
     const slow = prompt.includes('第 1/') ? 60 : 5;
     await new Promise((r) => setTimeout(r, slow));
     done += 1;
-    return { ok: true, addedText: 'ANSWER: ok\nEVIDENCE: e' };
+    return { ok: true, addedText: 'ANSWER: ok\nEVIDENCE: atwo.mjs:190' };
   };
   await runFanout({ task: 't', parts: 2, cwd: process.cwd(), ask: fakeAsk, onProgress: (e) => seen.push(e) });
   const dones = seen.filter((e) => e.phase === 'child-done');

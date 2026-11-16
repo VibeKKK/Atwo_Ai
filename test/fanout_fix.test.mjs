@@ -22,7 +22,7 @@ function makeAsk() {
       return { ok: true, addedText: 'ANSWER:\n六个，含 budget=6\nEVIDENCE:\natwo.mjs:190' };
     }
     if (/这是第 2 \//.test(prompt)) {
-      return { ok: true, addedText: 'ANSWER:\n五个：ok/usage/precondition/accept/channel\nEVIDENCE:\ngrep 常量段' };
+      return { ok: true, addedText: 'ANSWER:\n五个：ok/usage/precondition/accept/channel\nEVIDENCE:\natwo.mjs:190-195（grep 常量段）' };
     }
     return { ok: true, addedText: 'ANSWER:\n六个\nEVIDENCE:\natwo.mjs:190' };
   };
@@ -53,7 +53,7 @@ await it('fixRounds=0（默认）：判了 REVISE 也不重做，不偷偷多花
 await it('全 PASS 时不进自愈回路（省一次全量重派）', async () => {
   const ask = async (prompt) => /你是父会话/.test(prompt)
     ? { ok: true, addedText: '[{"id":"child-1","verdict":"PASS","reason":"ok"},{"id":"child-2","verdict":"PASS","reason":"ok"},{"id":"child-3","verdict":"PASS","reason":"ok"}]' }
-    : { ok: true, addedText: 'ANSWER:\nA\nEVIDENCE:\nB' };
+    : { ok: true, addedText: 'ANSWER:\nA\nEVIDENCE:\natwo.mjs:190' };
   const res = await runFanout({ task: 'q', parts: 3, cwd: process.cwd(), fixRounds: 2, ask });
   assert.equal(res.elapsed.rounds, 1);
   assert.equal(res.summary.value, 1);
@@ -62,7 +62,7 @@ await it('全 PASS 时不进自愈回路（省一次全量重派）', async () =
 await it('重做后仍判 REVISE 时，汇总跟着第二轮走（不虚报通过）', async () => {
   const ask = async (prompt) => /你是父会话/.test(prompt)
     ? { ok: true, addedText: '[{"id":"child-1","verdict":"PASS","reason":"ok"},{"id":"child-2","verdict":"REVISE","reason":"还是错"},{"id":"child-3","verdict":"PASS","reason":"ok"}]' }
-    : { ok: true, addedText: 'ANSWER:\nA\nEVIDENCE:\nB' };
+    : { ok: true, addedText: 'ANSWER:\nA\nEVIDENCE:\natwo.mjs:190' };
   const res = await runFanout({ task: 'q', parts: 3, cwd: process.cwd(), fixRounds: 1, ask });
   assert.equal(res.elapsed.rounds, 2);
   assert.equal(res.summary.value, -1);
