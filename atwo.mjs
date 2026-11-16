@@ -907,19 +907,17 @@ function cmdDone(args) {
         }
       }
     }
-    console.log('── 回归闸门 ──');
-    const tests = fs.readdirSync(path.join(HERE, 'test')).filter((f) => f.endsWith('.test.mjs')).sort();
-    const list = ['selftest.mjs', ...tests].filter((f) => fs.existsSync(path.join(HERE, 'test', f)));
-    const bad = [];
-    for (const f of list) {
-      const r = sh(process.execPath, [path.join('test', f)], { cwd: HERE, capture: true });
-      if (r.code !== 0) bad.push(f);
-    }
-    console.log('  跑了 ' + list.length + ' 个测试文件 → ' + (bad.length ? bad.length + ' 个失败' : '全过'));
-    if (bad.length) {
+    // 回归走 gate（闭包 + 语法 + 契约 + 全量测试），不是只跑 test/*.test.mjs。
+    // 只跑测试会漏两类致命情况：import 了不存在的文件、契约阈值被写死在代码里 ——
+    // 这两种都能让测试全绿而线上全错。
+    console.log('── 回归闸门（gate）──');
+    const g = runGate({ cwd: HERE, files: [], skipTests: false });
+    console.log(formatGate(g));
+    if (!g.ok) {
+      const red = g.steps.filter((s) => !s.ok);
       console.log('');
-      return die(['回归没全过，不许结：', '', ...bad.map((f) => '  ✗ test/' + f), '',
-        '看细节：node test/' + bad[0], '确实要硬结：atwo done --force'].join('\n'), EXIT.accept);
+      return die(['闸门没全过，不许结：', '', ...red.map((s) => '  ✗ ' + s.name + '：' + String(s.detail || '').slice(0, 200)), '',
+        '单跑一步：node atwo.mjs gate', '确实要硬结：atwo done --force'].join('\n'), EXIT.accept);
     }
   }
 

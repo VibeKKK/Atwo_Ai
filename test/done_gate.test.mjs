@@ -59,6 +59,35 @@ let diskStatus = '';
 try { diskStatus = JSON.parse(fs.readFileSync(path.join(taskDir, 'task.json'), 'utf8')).status; } catch { diskStatus = '(读不出)'; }
 ok('task.json 落盘为 completed', diskStatus === 'completed', diskStatus);
 
+// 第二条：done 的回归不该只是「跑 test/*.test.mjs」，而是 gate（闭包 + 语法 + 契约 + 测试）。
+// 用 ATWO_GATE_NESTED=1 让 gate 里的全量测试跳过（否则递归），其余步骤真跑。
+const taskDir2 = path.join(TASKS, '11-16-tmp-done-gate-g');
+fs.rmSync(taskDir2, { recursive: true, force: true });
+fs.mkdirSync(taskDir2, { recursive: true });
+fs.writeFileSync(path.join(taskDir2, 'task.json'), JSON.stringify({
+  id: 'tmp-done-gate-g',
+  title: '收工闸门走 gate 自测（临时任务，用完即删）',
+  status: 'implement',
+  priority: 'P3',
+  size: 'S',
+  creator: 'self-test',
+  assignee: 'self-test',
+  createdAt: new Date().toISOString().slice(0, 10),
+  createdAtMs: Date.now(),
+  relatedFiles: [],
+}, null, 2), 'utf8');
+
+const run2 = spawnSync(process.execPath, ['atwo.mjs', 'done', '--task', taskDir2, '--yes'], {
+  cwd: ROOT,
+  encoding: 'utf8',
+  env: { ...process.env, ATWO_GATE_NESTED: '1' },
+});
+const out2 = (run2.stdout || '') + (run2.stderr || '');
+ok('done 的回归走 gate（不是只跑测试文件）', /回归闸门（gate）/.test(out2) && /closure/.test(out2), out2.slice(0, 400));
+ok('gate 全绿时 done 退出码 0', run2.status === 0, 'status=' + run2.status + ' ' + out2.slice(0, 400));
+fs.rmSync(taskDir2, { recursive: true, force: true });
+ok('第二个临时任务已清理', !fs.existsSync(taskDir2));
+
 // 清理：这一条自己不干净的话会污染后续 state/list
 fs.rmSync(taskDir, { recursive: true, force: true });
 ok('临时任务已清理', !fs.existsSync(taskDir));
