@@ -62,6 +62,21 @@ function runCli(args, opts = {}) {
 }
 
 /** 从混杂输出里捞出 CLI 的 JSON 结果对象 */
+/**
+ * 通道「回了一句话但这句是错误」的判据。
+ *
+ * 为什么要单列：通道只要 stdout 有非空字符串就会被判成功，
+ * 而 `Max turns (8) exceeded`、`API Error: ...` 都是**有内容**的失败。
+ * 这类字符串一旦超过落盘的体积下限（200B），就会冒充产物通过验收。
+ * @param {string} text 通道原始输出或解析后的 result 字段
+ * @returns {boolean} 是错误就是 true
+ */
+export function isChannelError(text) {
+  const head = String(text || '').trim().slice(0, 120);
+  if (!head) return false;
+  return /^(?:max turns \(\d+\) exceeded\b|api error\b|error:|failed to\b|no response\b|request failed\b|rate limit\b)/i.test(head);
+}
+
 function extractJson(text) {
   const pick = (arr) => Array.isArray(arr)
     ? [...arr].reverse().find((o) => o && (o.type === 'result' || o.result !== undefined || o.subtype))
@@ -95,20 +110,40 @@ const NEED_AUTH = /Authentication required|Please use .login|not logged in|未�
 
 /** 派一次活。返回 { ok, addedText, elapsedMs, outputChars, raw } */
 export async function askCodeBuddy(prompt, opts = {}) {
-  const { timeoutMs = 300000, cwd, permissionMode = 'acceptEdits', model } = opts;
+  const { timeoutMs = 300000, cwd, permissionMode = 'acceptEdits' } = opts;
+  // 2026-11-15 实测（同一任务：写 40~60 行三函数模块，--tools ""）：
+  //   hy4free（CLI 默认）        → 425s / 115s 仍未完成，单次调用流式吐了 9261 chunk / 3.1MB
+  //   deepseek-v4.1-flash        →  14s  1352B
+  //   glm-5.3-flash              →  15s
+  //   minimax-m3.1-flash         →  19s  1597B
+  //   hy3                        →  21s  1798B
+  // 慢的真因不是网络也不是排队：421 秒里 idle 全程 0~79ms、每 10 秒稳定 +84KB，
+  // 链路一直在匀速传，是 hy4free 这个推理模型自己吐了 9261 个思考 chunk。
+  // 同一个任务换 flash 型号快 30 倍，产物质量相当（deepseek 那份还顺手处理了 lo>hi 交换）。
+  const model = opts.model || process.env.CODEBUDDY_MODEL || 'deepseek-v4.1-flash';
   const t0 = Date.now();
   // 成本实验（2026-11-13 实测 in tokens）：
   //   --tools "default"            → 23,130
   //   --tools "Write,Edit,Read"     →  7,633   ← 默认
   //   --tools ""                    →  6,175（纯文本任务，不能改文件）
   // 系统提示里工具 schema 占大头，限制工具就砍掉 2/3 固定开销。
-  const tools = process.env.CODEBUDDY_TOOLS !== undefined ? process.env.CODEBUDDY_TOOLS : 'Write,Edit,Read';
+  // 2026-11-16 rank2：允许单次调用覆写工具集（opts 优先 > env > 默认）。
+  // 动机：fanout 的父会话必须能读文件核对证据、但绝对不许改文件 —— 「父只审不干」原来只是提示词，
+  // 现在靠工具权限落地。env 语义不变，不传 opts 时行为与以前完全一致。
+  const tools = opts.tools !== undefined
+    ? String(opts.tools)
+    : (process.env.CODEBUDDY_TOOLS !== undefined ? process.env.CODEBUDDY_TOOLS : 'Write,Edit,Read');
   // 2026-11-14 改：max-turns 硬编码 1 会让「要求它思考一轮再输出」的活直接报 Max turns (1) exceeded
   // （自改项目 self.mjs 首次踩到）。改成可用 CODEBUDDY_MAX_TURNS 覆盖。
   // 2026-11-15 rank2：默认值 1 → 8。实测两个「读文件 + 分析 + 写产物」的调研任务
   // 全部只返回 21 个字符 "Max turns (1) exceeded"，且被 land 当成产物试图落盘。
   // 一轮只够一句话回答；需要读写文件、走工具的活至少 8 轮。环境变量仍可双向覆盖。
-  const maxTurns = String(process.env.CODEBUDDY_MAX_TURNS || '8');
+  // 2026-11-16：8 轮写不完 200 行模块（实测 #2 任务 8 轮用尽仍未收尾），提到 24。
+  // 轮次上限是成本开关：每一轮都要重发 system prompt（固定 20003 字节），轮次翻三倍 ≠ 成本翻三倍，
+  // 但「轮次不够导致整份产物作废」是百分之百的浪费。
+  // 2026-11-16 rank2：允许单次调用覆写回合数。父审要读 N 份产物的几十个引用行，
+  // 默认 10 回合一半就断在 "Max turns (10) exceeded" —— 6 片跑出 3 条假 unreviewed 的真因。
+  const maxTurns = String(opts.maxTurns != null ? opts.maxTurns : (process.env.CODEBUDDY_MAX_TURNS || '10'));
   const args = ['-p', prompt, '--output-format', 'json', '--tools', tools, '--no-session-persistence', '--max-turns', maxTurns];
   if (permissionMode) args.push('--permission-mode', permissionMode);
   if (model) args.push('--model', model);
@@ -121,8 +156,15 @@ export async function askCodeBuddy(prompt, opts = {}) {
     throw e;
   }
   if (r.timedOut) {
+    // 2026-11-15 修：超时时 r.out 里已经有模型吐出来的东西（runCli 的 stdout 一直在累积），
+    // 而这里原本把 addedText 硬编码成空串 —— 240 秒的劳动连同写好的代码一起被扔掉。
+    // 实测证据：写 120 行模块那轮，日志显示已经写到第三个函数，但成品在异常里消失，
+    // run json 里只剩 workbuddy 换路后的那一份，codebuddy 那份彻底没了。
+    // 现在把已收到的东西挂到 e.partial 上，由 runPool 留档进 partialOutput（不判交付）。
+    const j = extractJson(r.out);
+    const text = String((j && (j.result || j.text)) || r.out || '');
     const e = new Error('codebuddy 超时 ' + Math.round(timeoutMs / 1000) + 's');
-    e.partial = { ok: false, addedText: '', outputChars: 0 };
+    e.partial = { ok: false, addedText: text, outputChars: text.length, truncated: true, elapsedMs: Date.now() - t0 };
     throw e;
   }
 
@@ -133,10 +175,27 @@ export async function askCodeBuddy(prompt, opts = {}) {
     throw e;
   }
 
+  // 2026-11-16 修：通道自己报错时不能当成功。
+  // 实测：`--max-turns 8` 用尽后 CLI 的 result 字段就是一句 `Max turns (8) exceeded`（21 字符），
+  // 被当成正常产出落盘 —— land 因为「22B < 200B」拦下了这次，但那是运气不是设计：
+  // 任何超过 200 字节的错误文案都能一路通过落盘和验收，而验收器只查行数与语法，
+  // 查不出「这根本不是代码」。判据必须落在通道层，不能指望下游体积检查。
+  if (isChannelError(blob)) {
+    const e = new Error('codebuddy 通道报错：' + blob.slice(0, 200));
+    e.partial = { ok: false, addedText: '', outputChars: 0 };
+    throw e;
+  }
+
   const j = extractJson(r.out);
   const text = j
     ? (typeof j.result === 'string' ? j.result : JSON.stringify(j.result ?? j))
     : (r.out.trim() || blob);
+
+  if (isChannelError(text)) {
+    const e = new Error('codebuddy 通道报错：' + text.slice(0, 200));
+    e.partial = { ok: false, addedText: '', outputChars: 0 };
+    throw e;
+  }
 
   const elapsedMs = Date.now() - t0;
   if (r.code !== 0 && !text) {
