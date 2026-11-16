@@ -1,0 +1,33 @@
+{
+  "name": "@orch/accept",
+  "version": "0.1.0",
+  "description": "AI 交活的验收闸门：形状、语法、契约、要求四层静态判定，零依赖。",
+  "type": "module",
+  "bin": {
+    "accept": "./bin/accept.mjs"
+  },
+  "main": "./index.mjs",
+  "exports": {
+    ".": "./index.mjs",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.mjs",
+    "bin/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node test/accept.test.mjs"
+  },
+  "keywords": [
+    "ai",
+    "acceptance",
+    "verify",
+    "llm",
+    "codegen"
+  ],
+  "license": "MIT"
+}

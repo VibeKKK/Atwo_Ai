@@ -7,9 +7,11 @@
 //   node pair.mjs post "内容" [--topic 主题] 给对方投一封信
 //   node pair.mjs watch [秒]                每 N 秒刷新一次（默认 5 秒，Ctrl+C 退出）
 //   node pair.mjs read                      把未读全部标记为已读
+//   node pair.mjs alive ["在做什么"]         刷新自己的心跳并看双方心跳年龄（判「在忙」还是「已死」）
 
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { open } from './lib/store.mjs';
 
@@ -19,6 +21,11 @@ const MAIL = path.join(COLLAB, 'mailbox');
 const LOAD = path.join(COLLAB, 'load.json');
 const SHARED = path.join(COLLAB, 'SHARED.md');
 const READ = path.join(COLLAB, '.read.json');
+// 心跳：证明「这个 agent 还活着」，而不是「这个工作区还在磁盘上」。
+// 2026-11-16 定：对端我这边爆窗 3 小时，对方看 load.json 仍见我 busy —— 状态字段只能证明
+// 「最后一次登记时还活着」，不能证明现在还在。心跳由 agent 每次真的跑命令时刷新，
+// 所以「多长时间没跳」= 「多长时间没人在这儿干活」。
+const BEAT = path.join(COLLAB, 'heartbeat.json');
 
 // 2026-11-14 改（rank2）：原来硬编码 'dsh-lead'，两个工作区共用同一份 pair.mjs，
 // 在 rank2 侧跑 post 会把信签成 dsh-lead（实测文件名 ...-from-dsh-lead-...），
@@ -51,6 +58,34 @@ const fresh = (iso) => {
   if (ms < 36 * 3600e3) return Math.round(ms / 3600e3) + ' 小时前';
   return Math.round(ms / 86400e3) + ' 天前';
 };
+
+// —— 心跳 ——
+// 判读阈值：15 分钟内 = 活着；2 小时内 = 可能挂着/在忙（长任务正常不落笔）；
+// 超过 2 小时 = 疑似已死（会话爆窗或人离开了）。阈值故意放宽：长任务跑十几分钟很正常，
+// 太敏感会让「活着但沉默」被误判成死，那比没有心跳更糟 —— 会把人骗去重开会话。
+const BEAT_ALIVE_MS = 15 * 60e3;
+const BEAT_STALE_MS = 2 * 3600e3;
+
+function beat(note) {
+  let db = readJson(BEAT, {});
+  if (!db || typeof db !== 'object' || Array.isArray(db)) db = {};
+  db[ME] = {
+    ts: new Date().toISOString(),
+    host: os.hostname(),
+    cwd: process.cwd(),
+    note: note ? String(note).slice(0, 120) : (db[ME] && db[ME].note) || null,
+  };
+  try { writeJson(BEAT, db); } catch { /* 心跳失败不该影响主命令 */ }
+}
+
+function beatVerdict(iso) {
+  if (!iso) return { text: '从未跳过', level: 'dead' };
+  const ms = Date.now() - new Date(iso).getTime();
+  if (Number.isNaN(ms)) return { text: '时间戳读不懂', level: 'dead' };
+  if (ms <= BEAT_ALIVE_MS) return { text: '活着（' + fresh(iso) + '）', level: 'alive' };
+  if (ms <= BEAT_STALE_MS) return { text: '可能在忙（' + fresh(iso) + '）', level: 'slow' };
+  return { text: '疑似已死（' + fresh(iso) + '没动静，可能会话爆窗）', level: 'dead' };
+}
 
 function mails() {
   if (!fs.existsSync(MAIL)) return [];
@@ -85,6 +120,14 @@ function board() {
   lines.push(pad('', 26) + '在做：' + me.current);
   lines.push(pad(PEER.label, 26) + '状态 ' + pad(peer.state, 10) + '更新于 ' + fresh(peer.since));
   lines.push(pad('', 26) + '在做：' + peer.current);
+  // 心跳独立于状态字段：状态是「他最后一次说自己忙」，心跳是「他最后一次真的动过手」。
+  const beats = readJson(BEAT, {}) || {};
+  const myBeat = beatVerdict(beats[ME] && beats[ME].ts);
+  const peerBeat = beatVerdict(beats[PEER.id] && beats[PEER.id].ts);
+  lines.push(pad('', 26) + '心跳 我 ' + myBeat.text + ' · 对端 ' + peerBeat.text);
+  if (peerBeat.level === 'dead') {
+    lines.push(pad('', 26) + '⚠ 对端心跳过期：别把「状态 busy」当「他在听信」——信会一直躺在信箱里。');
+  }
   lines.push('─'.repeat(64));
 
   lines.push('未读信 ' + unread.length + ' 封' + (all.length ? '（共 ' + all.length + ' 封）' : ''));
@@ -123,12 +166,16 @@ function board() {
     for (const h of heads.slice(-4)) lines.push('  ' + h.replace(/^#+\s*/, ''));
   }
   lines.push('════════════════════════════════════════════════════════════');
-  lines.push('发信：node pair.mjs post "内容"      改我在干什么：node pair.mjs me "…"');
+  lines.push('发信：node pair.mjs post "内容"      改我在干什么：node pair.mjs me "…"      刷心跳：node pair.mjs alive');
   return lines.join('\n');
 }
 
 const argv = process.argv.slice(2);
 const cmd = argv[0] || 'board';
+
+// 除 watch 外，任何一次真实使用都算一次心跳（agent 跑命令 = 有人在这儿干活）。
+// watch 是长时间空转的看板，它跳不能证明「有人在处理信」，所以不刷。
+if (cmd !== 'watch') beat(cmd === 'me' ? argv.slice(1).join(' ') : null);
 
 if (cmd === 'board') {
   console.log(board());
@@ -160,6 +207,18 @@ if (cmd === 'board') {
   const text = `# ${topic}\n\n- 发件：${ME}\n- 时间：${new Date().toLocaleString('zh-CN')}\n\n${body}\n\n---\n回信：node pair.mjs post "内容" --topic 回信\n`;
   fs.writeFileSync(file, text, 'utf8');
   console.log('已投递：' + path.basename(file));
+} else if (cmd === 'alive') {
+  // 显式心跳：人在的时候手动敲一下，让对端知道「刚才那条 busy 是真的」。
+  const note = argv.slice(1).join(' ').trim();
+  beat(note || null);
+  const beats = readJson(BEAT, {}) || {};
+  const rows = [[ME, beats[ME]], [PEER.id, beats[PEER.id]]];
+  console.log('心跳已刷新' + (note ? '：' + note : '') + '\n');
+  for (const [who, b] of rows) {
+    const v = beatVerdict(b && b.ts);
+    console.log('  ' + pad(who, 22) + v.text + (b && b.note ? '  · ' + b.note : ''));
+  }
+  console.log('\n判读：15 分钟内=活着 / 2 小时内=可能在忙 / 超过 2 小时=疑似已死（会话爆窗或人走了）');
 } else if (cmd === 'read') {
   const read = readJson(READ, {});
   const now = new Date().toISOString();
@@ -168,6 +227,6 @@ if (cmd === 'board') {
   writeJson(READ, read);
   console.log('已标记 ' + n + ' 封为已读');
 } else {
-  console.error('未知命令：' + cmd + '\n可用：board（默认）/ watch / me / post / read');
+  console.error('未知命令：' + cmd + '\n可用：board（默认）/ watch / me / post / read / alive');
   process.exit(2);
 }

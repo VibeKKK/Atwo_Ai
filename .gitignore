@@ -29,3 +29,35 @@ _wb_*/
 _t.mjs
 _dbg.txt
 _cap.txt
+
+# ── 运行时状态（每台机器一份，不进库）────────
+config.local.json
+STATE.md
+memory/STATE.md
+memory/*.json
+memory/*.jsonl
+collab/heartbeat.json
+collab/load.json
+collab/.armed
+reviews/
+.atw/tasks/
+.atw/fanout/
+.atw/workspace/
+.atw/*.json
+.agents/
+.codebuddy/
+.dsh/
+.trae/
+
+# ── 四通道草稿与备份（par7/A4 的原料，留在盘上不进库）
+lib/*.codebuddy.mjs
+lib/*.doubao.mjs
+lib/*.trae.mjs
+lib/*.workbuddy.mjs
+lib/probe_*.mjs
+*.bak*
+vm/__pycache__/
+lib/mode_badge.mjs
+lib/tier_probe.mjs
+lib/par_num4.mjs
+memory/log.codebuddy.js
