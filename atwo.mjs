@@ -22,6 +22,7 @@ import { summarize } from './lib/report.mjs';
 import { quotaRecord, appendQuota } from './lib/quota-log.mjs';
 import { makeFanoutVerb } from './lib/fanout-cli.mjs';
 import { VERBS, GLOBAL_FLAGS, EXIT_CODES, LIMITS, isHelp, checkFlags, positional, specOf, formatSpec, capsJson, valueFlagsOf } from './lib/cli-spec.mjs';
+import { detectEnvironment, quickSelfCheck } from './lib/bootstrap.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 // 三个环境变量是测试缝（与 ATWO_TASKS_DIR 同一个理由）：测试要造「日志不可写」「假 orchestra」，
@@ -1078,6 +1079,64 @@ function cmdRaw(args) {
   return orchestra(a).code;
 }
 
+// ── doctor / try / 裸命令 ────────────────────────────────────────────────
+// 陌生 AI 打开 atwo 时问的不是「有哪些动词」，是「在我这台机器上哪条路真能跑」。
+// 所以裸命令不再是 usage，而是「诊断 + 三个候选动作」。
+function printCan(c) {
+  const ch = Object.entries(c.channels).map(([k, v]) => k + (v.ok ? '✓' : '✗')).join(' ');
+  console.log('这台机器 ' + c.platform + ' · node ' + c.node);
+  console.log('仓库     ' + c.cwd + (c.repo.isGit ? '（git）' : '') + (c.repo.tests ? '（有测试入口）' : '（没有 test/all.mjs）'));
+  console.log('通道     ' + ch + (c.channelUp.length ? '' : '  ← 一个都不可用'));
+  const o = c.ollama;
+  console.log('本地     ollama ' + (o.ok ? '✓ ' + (o.models.slice(0, 2).join(' / ') || '已有模型') : '✗ ' + (o.why || '')));
+  console.log('');
+  console.log('现在能做：' + c.can.join(' · '));
+  if (c.cannot.length) console.log('现在不能：' + c.cannot.join(' · '));
+}
+
+async function cmdBare() {
+  const c = await detectEnvironment();
+  console.log('atwo — AI 自用的编排 CLI（不是给人读的）');
+  console.log('');
+  printCan(c);
+  console.log('');
+  console.log('下一步：');
+  console.log('  atwo try            2 秒自检，看它真能干活（不花钱、不派活）');
+  console.log('  atwo caps --json    全部动词 + 参数 + 代价，比你猜快');
+  console.log('  atwo doctor         详细诊断 + 每个缺的东西怎么补');
+  RESULT.data = { doctor: c };
+  return EXIT.ok;
+}
+
+async function cmdDoctor(args) {
+  const c = await detectEnvironment();
+  printCan(c);
+  console.log('');
+  const fixes = Object.entries(c.channels).filter(([, v]) => !v.ok && v.fix);
+  if (fixes.length) {
+    console.log('怎么补：');
+    for (const [k, v] of fixes) console.log('  ' + k.padEnd(10) + v.fix + (v.path ? '（当前指向 ' + v.path + '，不存在）' : '（没有默认路径）'));
+    console.log('');
+  }
+  console.log('建议：');
+  for (const a of c.advice) console.log('  · ' + a);
+  RESULT.data = { doctor: c };
+  return EXIT.ok;
+}
+
+async function cmdTry() {
+  const r = await quickSelfCheck();
+  console.log('自检三连（零依赖、不花钱、不联网）：');
+  for (const s of r.steps) {
+    console.log('  ' + (s.ok ? 'ok  ' : 'FAIL') + '  ' + s.name.padEnd(8) + s.detail);
+  }
+  console.log('');
+  console.log(r.ok ? '✓ 全部正常 · ' + r.elapsedMs + 'ms' : '✗ 有步骤没过 · ' + r.elapsedMs + 'ms');
+  console.log(r.next);
+  RESULT.data = { try: r };
+  return r.ok ? EXIT.ok : EXIT.accept;
+}
+
 // ─────────── 机器可读出口（操作者是 AI 时走这条）───────────
 // 人话一个字都不丢，但全部进 JSON 的 log 字段；stdout 只留最后那一个对象。
 const JSON_MODE = process.argv.includes('--json');
@@ -1091,9 +1150,10 @@ if (JSON_MODE) {
 
 const cmdFanout = makeFanoutVerb({ EXIT, RESULT, HERE, die });
 
-const verb = String(process.argv[2] || 'help').toLowerCase();
+const bareCall = !process.argv[2];
+const verb = String(process.argv[2] || '__bare').toLowerCase();
 const rest = process.argv.slice(3).filter((a) => a !== '--json');
-const table = { new: cmdNew, batch: cmdBatch, go: cmdGo, check: cmdCheck, diff: cmdDiff, judge: cmdJudge, fanout: cmdFanout, done: cmdDone, state: cmdState, mode: cmdMode, raw: cmdRaw };
+const table = { doctor: cmdDoctor, try: cmdTry, new: cmdNew, batch: cmdBatch, go: cmdGo, check: cmdCheck, diff: cmdDiff, judge: cmdJudge, fanout: cmdFanout, done: cmdDone, state: cmdState, mode: cmdMode, raw: cmdRaw };
 
 /** 打印规格：人读走 stdout，机器读塞进 RESULT.data（由统一收尾出 JSON）。 */
 function printSpec(target) {
@@ -1123,6 +1183,10 @@ if (verb === 'caps' || verb === 'spec' || verb === 'capabilities') {
     process.stdout.write(JSON.stringify(capsJson(), null, 2) + String.fromCharCode(10));
   }
   code = EXIT.ok;
+} else if (verb === '__bare') {
+  // 裸命令永远不是「打一遍 usage 让你自己找」——那是人的交互习惯。
+  // AI 需要的是「你这台机器现在能跑什么 + 下一步敲哪三个」。
+  code = await cmdBare();
 } else if (isHelp(verb)) {
   const tgt = rest.find((a) => !a.startsWith('--')) || '';
   printSpec(tgt);

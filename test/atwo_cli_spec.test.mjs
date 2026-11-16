@@ -33,8 +33,16 @@ if (S.__missing) check('lib/cli-spec.mjs 可加载', false, S.__missing);
 else {
   // —— 规格表本身 ——
   const names = Object.keys(S.VERBS);
-  const want = ['new', 'batch', 'go', 'check', 'diff', 'judge', 'fanout', 'done', 'state', 'mode', 'raw'];
-  check('VERBS 覆盖 11 个动词', want.every((v) => names.includes(v)) && names.length === want.length, names.join(','));
+  // 不写死数量：写死一个数字，加动词就要改测试，等于用测试绑住产品。
+  // 真正要钉的是「spec 与实现是同一张表」——从 atwo.mjs 里扒出 table，键集合必须完全一致。
+  const atwoSrc = fs.readFileSync(new URL('../atwo.mjs', import.meta.url), 'utf8');
+  const line = atwoSrc.split('\n').find((l) => l.startsWith('const table = {'));
+  const impl = line ? [...line.matchAll(/([A-Za-z_][\w]*)\s*:\s*cmd/g)].map((m) => m[1]) : [];
+  const onlySpec = names.filter((v) => !impl.includes(v));
+  const onlyImpl = impl.filter((v) => !names.includes(v));
+  check('VERBS 与 atwo.mjs 的 table 是同一张表（新增动词不会一处写一处漏）',
+    impl.length >= 11 && onlySpec.length === 0 && onlyImpl.length === 0,
+    'spec ' + names.length + ' 个 / 实现 ' + impl.length + ' 个' + (onlySpec.length ? ' · 只有 spec：' + onlySpec : '') + (onlyImpl.length ? ' · 只有实现：' + onlyImpl : ''));
   check('每个动词都有 summary/cost/strict', names.every((k) => {
     const v = S.VERBS[k];
     return typeof v.summary === 'string' && v.summary.length > 4 && ['none', 'io', 'spawn'].includes(v.cost) && typeof v.strict === 'boolean';
