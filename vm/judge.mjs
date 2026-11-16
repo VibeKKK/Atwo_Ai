@@ -24,6 +24,7 @@
 
 import fs from 'node:fs';
 import { compileVerdict, runVerdict } from './verdict.mjs';
+import { createHash } from 'node:crypto';
 import { makeAttestation } from './attest.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -40,8 +41,10 @@ const CONTRACT_PATH = path.join(here, 'oracle-contract.json');
  */
 function loadContract() {
   let raw;
+  let text;
   try {
-    raw = JSON.parse(fs.readFileSync(CONTRACT_PATH, 'utf8'));
+    text = fs.readFileSync(CONTRACT_PATH, 'utf8');
+    raw = JSON.parse(text);
   } catch (e) {
     throw new Error('契约文件缺失或损坏：' + CONTRACT_PATH + '（判定常量只认契约，代码内不设兜底）—— ' + e.message);
   }
@@ -63,6 +66,15 @@ function loadContract() {
 
 /** 载入后的契约（只读快照）。 */
 export const CONTRACT = loadContract();
+
+/**
+ * 契约内容哈希（对文件字节算，不对解析结果算）。
+ *
+ * 为什么不能只绑 contractVersion：版本号是自报的 —— 把 cut.high 从 0.45 改成 0.50 而不动
+ * contractVersion，旧写法下所有凭证照样「重算通过」。今天 gate 那次实验就是这么骗过去的。
+ * 绑字节哈希之后，「阈值变了」这件事在凭证层也是可查的，不必依赖有人记得改版本号。
+ */
+export const CONTRACT_HASH = createHash('sha256').update(fs.readFileSync(CONTRACT_PATH)).digest('hex');
 
 /** 分档阈值 —— 从契约读。改这里等于改 AST 与 verdictOf 两处，因为它们都引用本对象。 */
 export const CUT = { high: CONTRACT.cut.high, mid: CONTRACT.cut.mid };
@@ -250,6 +262,7 @@ export function judge(input = {}, opts = {}) {
       inputs: { meanZ: stats.meanZ, agreement: stats.agreement, nValid: stats.nValid },
       output: { value: vr.value },
       contract: CONTRACT,
+      contractHash: CONTRACT_HASH,
     });
   }
   return out;

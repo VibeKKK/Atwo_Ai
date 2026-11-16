@@ -25,6 +25,7 @@ import { selfLanded, detectTarget } from './lib/land.mjs';
 import { makeFanoutVerb } from './lib/fanout-cli.mjs';
 import { makeArmyVerb } from './lib/army-cli.mjs';
 import { makeTriageVerb } from './lib/triage-cli.mjs';
+import { installHooks, hookStatus, removeHooks, formatHookStatus, formatInstall } from './lib/hooks.mjs';
 import { VERBS, GLOBAL_FLAGS, EXIT_CODES, LIMITS, isHelp, checkFlags, positional, specOf, formatSpec, capsJson, valueFlagsOf } from './lib/cli-spec.mjs';
 import { detectEnvironment, quickSelfCheck } from './lib/bootstrap.mjs';
 import { shouldDelegate, formatShould } from './lib/should.mjs';
@@ -886,14 +887,30 @@ async function cmdAttest(args) {
   const jEntries = readAttestations(judgeLedger);
   if (jEntries.length) {
     const { verifyAttestation } = await import('./vm/attest.mjs');
+    const { CONTRACT_HASH, CONTRACT } = await import('./vm/judge.mjs');
+    const R = {
+      'contract-unbound': '没绑契约哈希（v1 凭证，管不到尺子变化）',
+      'contract-changed': '契约内容已变（尺子换了，这份凭证的结论不再代表现在）',
+      'hash-mismatch': '内容被改过',
+      'recompute-mismatch': '重算结果不一致',
+    };
     judge.checked = jEntries.length;
+    judge.contract = { version: CONTRACT.contractVersion, hash: CONTRACT_HASH.slice(0, 12) };
+    judge.legacy = [];
     for (const e of jEntries) {
-      const v = verifyAttestation(e);
-      if (v.ok) judge.ok += 1; else judge.bad.push({ file: 'judge', reason: v.reason });
+      const v = verifyAttestation(e, { contractHash: CONTRACT_HASH });
+      if (v.ok) judge.ok += 1;
+      else if (v.reason === 'contract-unbound') judge.legacy.push(e);
+      else judge.bad.push({ file: 'judge', reason: v.reason, why: R[v.reason] || null });
     }
   }
   console.log(formatAudit(res));
-  if (judge.checked) console.log(`判定凭证：共 ${judge.checked} 份，可重算 ${judge.ok}，失效 ${judge.bad.length}`);
+  if (judge.checked) {
+    const legacyTail = judge.legacy.length ? `，旧版 ${judge.legacy.length}` : '';
+    console.log(`判定凭证：共 ${judge.checked} 份，可重算 ${judge.ok}，失效 ${judge.bad.length}${legacyTail}（当前契约 v${judge.contract.version} · 哈希 ${judge.contract.hash}…）`);
+    for (const b of judge.bad) console.log('  ✗ ' + b.reason + (b.why ? ' —— ' + b.why : ''));
+    if (judge.legacy.length) console.log('  · 旧版（v1）凭证没绑契约哈希，验不了尺子变化：重跑 atwo judge --attest 生成 v2 即可替换');
+  }
   if (RESULT && RESULT.data) RESULT.data.attest = { files: res, judge };
   return (res.failed.length + judge.bad.length) ? EXIT.accept : EXIT.ok;
 }
@@ -1378,6 +1395,48 @@ async function cmdShould(args) {
   return EXIT.ok;
 }
 
+/**
+ * 钩子：把闸门装成「不跑就提不上去」。
+ * 全仓没有 CI，闸门靠人记得敲 —— 而「记得敲」不成立，所以让 git 自己调。
+ */
+async function cmdHooks(args) {
+  const sub = String(args[0] || '').toLowerCase();
+  if (sub === 'install') {
+    const res = installHooks({ cwd: HERE, force: args.includes('--force') });
+    RESULT.data = res;
+    if (JSON_MODE) return res.ok ? EXIT.ok : EXIT.precondition;
+    console.log(formatInstall(res));
+    if (res.ok) console.log('真跑一次验：node atwo.mjs hooks run');
+    return res.ok ? EXIT.ok : EXIT.precondition;
+  }
+  if (sub === 'remove') {
+    const res = removeHooks({ cwd: HERE });
+    RESULT.data = res;
+    if (JSON_MODE) return EXIT.ok;
+    console.log(res.removed.length ? '已卸：' + res.removed.join(' / ') : '没有 atwo 装的钩子。');
+    if (res.kept.length) console.log('保留（不是 atwo 装的）：' + res.kept.join(' / '));
+    return EXIT.ok;
+  }
+  if (sub === 'run') {
+    // 手动触发与钩子等价的检查（不经过 git，方便在 CI/定时任务里复用）
+    const r = runGate({ files: [], skipTests: args.includes('--no-tests') });
+    RESULT.data = r;
+    if (JSON_MODE) return r.ok ? EXIT.ok : EXIT.accept;
+    console.log(formatGate(r));
+    return r.ok ? EXIT.ok : EXIT.accept;
+  }
+  if (sub === '' || sub === 'status') {
+    const st = hookStatus({ cwd: HERE });
+    RESULT.data = st;
+    if (JSON_MODE) return EXIT.ok;
+    console.log(formatHookStatus(st));
+    return EXIT.ok;
+  }
+  console.error('用法：atwo hooks [status|install|remove|run] [--force] [--no-tests]');
+  console.error('这一条没有改任何东西。');
+  return EXIT.usage;
+}
+
 async function cmdGate(args) {
   const fi = args.indexOf('--files');
   const files = (fi >= 0 ? String(args[fi + 1] || '') : '').split(/[,\s]+/).filter(Boolean);
@@ -1406,7 +1465,7 @@ const cmdTriage = makeTriageVerb({ EXIT, RESULT, HERE, die });
 const bareCall = !process.argv[2];
 const verb = String(process.argv[2] || '__bare').toLowerCase();
 const rest = process.argv.slice(3).filter((a) => a !== '--json');
-const table = { doctor: cmdDoctor, should: cmdShould, gate: cmdGate, try: cmdTry, new: cmdNew, batch: cmdBatch, go: cmdGo, check: cmdCheck, diff: cmdDiff, judge: cmdJudge, attest: cmdAttest, score: cmdScore, pitfall: cmdPitfall, army: cmdArmy, triage: cmdTriage, fanout: cmdFanout, done: cmdDone, state: cmdState, mode: cmdMode, raw: cmdRaw };
+const table = { doctor: cmdDoctor, should: cmdShould, gate: cmdGate, hooks: cmdHooks, try: cmdTry, new: cmdNew, batch: cmdBatch, go: cmdGo, check: cmdCheck, diff: cmdDiff, judge: cmdJudge, attest: cmdAttest, score: cmdScore, pitfall: cmdPitfall, army: cmdArmy, triage: cmdTriage, fanout: cmdFanout, done: cmdDone, state: cmdState, mode: cmdMode, raw: cmdRaw };
 
 /** 打印规格：人读走 stdout，机器读塞进 RESULT.data（由统一收尾出 JSON）。 */
 function printSpec(target) {
