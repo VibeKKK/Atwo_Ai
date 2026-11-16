@@ -1,0 +1,79 @@
+{
+  "contract": "atwo-blind-manifest/2",
+  "note": "标签在跑之前定下，但 2026-11-17 第一次有效跑暴露：good 标签里有真引错行的（引 lib/army-run.mjs:127 与 lib/split.mjs:186 都对不上原文），当时 codebuddy 判 PASS 属于真漏判，不是误杀。这批产物落盘时还没有 SNAPSHOT.json，无法用当时的字节复核 → 这一批的误杀数字不得引用；lib/snapshot.mjs 上线后的新产物才可盲测。",
+  "cases": [
+    {
+      "id": "fab-1",
+      "file": ".atw/fanout/20261117-015238/child-1.md",
+      "label": "bad",
+      "why": "引 fanout/service.go 等不存在的文件"
+    },
+    {
+      "id": "fab-2",
+      "file": ".atw/fanout/20261117-015238/child-2.md",
+      "label": "bad",
+      "why": "引 workbuddy/README.md / ollama/config.go 等不存在的文件"
+    },
+    {
+      "id": "empty-1",
+      "file": ".atw/fanout/20261117-011145/child-1.md",
+      "label": "bad",
+      "why": "通道失败：ANSWER/EVIDENCE 全空"
+    },
+    {
+      "id": "empty-2",
+      "file": ".atw/fanout/20261117-011145/child-2.md",
+      "label": "bad",
+      "why": "通道失败：ANSWER/EVIDENCE 全空"
+    },
+    {
+      "id": "empty-3",
+      "file": ".atw/fanout/20261117-011145/child-3.md",
+      "label": "bad",
+      "why": "通道失败：ANSWER/EVIDENCE 全空"
+    },
+    {
+      "id": "good-a",
+      "file": ".atw/fanout/20261117-011009/child-1.md",
+      "label": "good",
+      "why": "codebuddy PASS，引文经核对"
+    },
+    {
+      "id": "good-b",
+      "file": ".atw/fanout/20261117-011009/child-2.md",
+      "label": "good",
+      "why": "codebuddy PASS，引文经核对"
+    },
+    {
+      "id": "good-c",
+      "file": ".atw/fanout/20261117-011009/child-3.md",
+      "label": "good",
+      "why": "codebuddy PASS，引文经核对"
+    },
+    {
+      "id": "good-d",
+      "file": ".atw/fanout/20261117-012256/child-1.md",
+      "label": "good",
+      "why": "codebuddy PASS"
+    },
+    {
+      "id": "good-e",
+      "file": ".atw/fanout/20261117-012256/child-2.md",
+      "label": "good",
+      "why": "codebuddy PASS"
+    },
+    {
+      "id": "good-f",
+      "file": ".atw/fanout/20261117-010708/child-1.md",
+      "label": "good",
+      "why": "codebuddy PASS"
+    },
+    {
+      "id": "good-g",
+      "file": ".atw/fanout/20261117-010708/child-4.md",
+      "label": "good",
+      "why": "codebuddy PASS"
+    }
+  ],
+  "labelStatus": "unverified"
+}
