@@ -357,7 +357,17 @@ ${content}
 async function dispatch(kindLabel, rawPrompt, extra = {}) {
   const name = extra.agent || effectiveWho;
   const ag = REGISTRY[name];
-  if (!ag) throw new Error('未知 agent: ' + name);
+  if (!ag) {
+    // REGISTRY 只登记 GUI/CLI 会话通道；deepseek 这类 HTTP 通道登记在 LANE_DEFS。
+    // 以前这里直接 throw，被上层当成「评审者失败」静默换成 codebuddy —— 结果就是
+    // 「以为异源、其实同源」。所以这里再问一次 LANE_DEFS。
+    const def = LANE_DEFS[name];
+    if (def && typeof def.ask === 'function') {
+      const r = await def.ask(rawPrompt, { timeoutMs: extra.timeoutMs, model: extra.model, system: extra.system, maxTurns: extra.maxTurns });
+      return { kind: name, ok: !!(r && r.ok), addedText: (r && (r.addedText || r.text)) || '', err: (r && (r.err || r.error)) || '', elapsedMs: (r && r.elapsedMs) || 0, model: (r && r.model) || '', viaDefinitions: true };
+    }
+    throw new Error('未知 agent: ' + name);
+  }
   const project = process.env.ORCH_PROJECT;
   const memTail = buildContext();
   let projectSlim = '';

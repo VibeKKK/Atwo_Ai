@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DEFAULT_MAX_CHUNKS, MIN_UNITS_TO_SPLIT, chunkTask, describeSplit, detectUnits, mergeParts, planSplit } from '../lib/split.mjs';
+import { DEFAULT_MAX_CHUNKS, chunkTask, describeSplit, detectUnits, mergeParts, planSplit } from '../lib/split.mjs';
 import { runFanout } from '../lib/fanout-run.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));

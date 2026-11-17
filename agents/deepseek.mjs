@@ -20,6 +20,8 @@ export const MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-flash';
 
 /** key 解析顺序：env → ~/.dsh/deepseek.key（仓库外）。找不到返回空串，绝不抛。 */
 export function loadKey() {
+  // 测试与离线场景：把这条通道整体关掉（否则跑测试会真的打网络、烧额度、还拖慢全量）。
+  if (process.env.DEEPSEEK_DISABLE === '1') return '';
   const env = String(process.env.DEEPSEEK_API_KEY || '').trim();
   if (env) return env;
   try {
@@ -49,7 +51,7 @@ export async function askDeepSeek(prompt, opts = {}) {
   //   thinking:{type:'disabled'} → 4.0s、content 2,245、reasoning 0、正常以 VERDICT 结尾 ✅
   // 所以默认关思考（OPTS 可开）。不关的话父审调用只能拿到半截散文，永远解析不出裁决。
   const thinkOff = opts.thinking === undefined ? true : !opts.thinking;
-  const body = { model, messages, stream: false, max_tokens: Number(opts.maxTokens) > 0 ? Number(opts.maxTokens) : 4000, temperature: Number(opts.temperature) >= 0 ? Number(opts.temperature) : 0, ...(thinkOff ? { thinking: { type: 'disabled' } } : {}) };
+  const body = { model, messages, stream: false, max_tokens: Number(opts.maxTokens) > 0 ? Number(opts.maxTokens) : 8000, temperature: Number(opts.temperature) >= 0 ? Number(opts.temperature) : 0, ...(thinkOff ? { thinking: { type: 'disabled' } } : {}) };
   const ac = new AbortController();
   const timer = setTimeout(() => { try { ac.abort(); } catch {} }, timeoutMs);
   try {
