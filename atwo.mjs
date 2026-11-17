@@ -33,6 +33,7 @@ import { resolveAsk } from './lib/lanes.mjs';
 import { makeArmyVerb } from './lib/army-cli.mjs';
 import { makeTriageVerb } from './lib/triage-cli.mjs';
 import { makeBlindVerb } from './lib/blind-objective.mjs';
+import { lanesSnapshot, renderLanes } from './lib/lanesnap.mjs';
 import { installHooks, hookStatus, removeHooks, formatHookStatus, formatInstall } from './lib/hooks.mjs';
 import { VERBS, GLOBAL_FLAGS, EXIT_CODES, LIMITS, isHelp, checkFlags, positional, specOf, formatSpec, capsJson, valueFlagsOf } from './lib/cli-spec.mjs';
 import { detectEnvironment, quickSelfCheck } from './lib/bootstrap.mjs';
