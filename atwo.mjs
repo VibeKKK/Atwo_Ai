@@ -39,6 +39,7 @@ import { makeTriageVerb } from './lib/triage-cli.mjs';
 import { makeBlindVerb } from './lib/blind-objective.mjs';
 import { lanesSnapshot, renderLanes } from './lib/lanesnap.mjs';
 import { makeBoardVerb } from './lib/board-cli.mjs';
+import { readHealthFromLog, renderHealth } from './lib/lane-health.mjs';
 import { makeTailVerb, makeStopVerb } from './lib/runs-cli.mjs';
 import { installHooks, hookStatus, removeHooks, formatHookStatus, formatInstall } from './lib/hooks.mjs';
 import { VERBS, GLOBAL_FLAGS, EXIT_CODES, LIMITS, isHelp, checkFlags, positional, specOf, formatSpec, capsJson, valueFlagsOf } from './lib/cli-spec.mjs';
@@ -1080,6 +1081,37 @@ function cmdPitfall(args = []) {
   }
   return EXIT.ok;
 }
+/**
+ * atwo health —— 选路的依据是什么，让人自己能看到。
+ * 只读账本，不探活、不发请求、不问模型。
+ */
+function cmdHealth(args = []) {
+  const rows = readHealthFromLog(HERE, { file: process.env.ATWO_LOG || undefined });
+  if (rows.length) {
+    process.stdout.write(renderHealth(rows) + '\n');
+    process.stdout.write('\n');
+    process.stdout.write('通道      派活   成功   成功率  p50      ' + '\n');
+    for (const r of rows) {
+      const pctText = r.rate === null ? '   - ' : (Math.round(r.rate * 100) + '%').padStart(5);
+      const p50 = r.p50 === null ? '-' : (r.p50 >= 60000 ? Math.round(r.p50 / 60000) + 'm' : Math.round(r.p50 / 1000) + 's');
+      process.stdout.write(
+        String(r.lane).padEnd(10) +
+        String(r.calls).padStart(3) + '    ' +
+        String(r.ok).padStart(3) + '    ' +
+        pctText + '   ' +
+        String(p50).padEnd(8) + '\n',
+      );
+    }
+    process.stdout.write('\n');
+    process.stdout.write('口径：只数真干活的派活（quota 不算）· 默认最近 7 天 · 排序用 Wilson 95% 下界\n');
+    process.stdout.write('影响：健康优先、没样本的保持原序、≥5 单且成功率 <25% 的沉底（不删）。ATWO_HEALTH=0 关闭。\n');
+  } else {
+    process.stdout.write('账本里还没有派活记录（' + (process.env.ATWO_LOG || 'memory/log.jsonl') + '）\n');
+  }
+  RESULT.data.health = rows;
+  return EXIT.ok;
+}
+
 function cmdState() {
   const list = listTasks();
   if (!list.length) {
@@ -1678,7 +1710,7 @@ function cmdSnapshot() {
   RESULT.data.snapshot = snap;
   return EXIT.ok;
 }
-const table = { doctor: cmdDoctor, queue: cmdQueue, cost: cmdCost, pool: cmdPool, review: cmdReview, should: cmdShould, gate: cmdGate, hooks: cmdHooks, try: cmdTry, new: cmdNew, batch: cmdBatch, go: cmdGo, check: cmdCheck, diff: cmdDiff, judge: cmdJudge, attest: cmdAttest, models: cmdModels, snapshot: cmdSnapshot, board: cmdBoard, tail: cmdTail, stop: cmdStop, score: cmdScore, pitfall: cmdPitfall, army: cmdArmy, triage: cmdTriage, blind: cmdBlind, fanout: cmdFanout, patch: cmdPatch, drain: cmdDrain, edit: cmdEdit, stage: cmdStage, done: cmdDone, state: cmdState, mode: cmdMode, raw: cmdRaw };
+const table = { doctor: cmdDoctor, queue: cmdQueue, cost: cmdCost, pool: cmdPool, review: cmdReview, should: cmdShould, gate: cmdGate, hooks: cmdHooks, try: cmdTry, new: cmdNew, batch: cmdBatch, go: cmdGo, check: cmdCheck, diff: cmdDiff, judge: cmdJudge, attest: cmdAttest, models: cmdModels, snapshot: cmdSnapshot, board: cmdBoard, health: cmdHealth, tail: cmdTail, stop: cmdStop, score: cmdScore, pitfall: cmdPitfall, army: cmdArmy, triage: cmdTriage, blind: cmdBlind, fanout: cmdFanout, patch: cmdPatch, drain: cmdDrain, edit: cmdEdit, stage: cmdStage, done: cmdDone, state: cmdState, mode: cmdMode, raw: cmdRaw };
 
 /** 打印规格：人读走 stdout，机器读塞进 RESULT.data（由统一收尾出 JSON）。 */
 function printSpec(target) {
