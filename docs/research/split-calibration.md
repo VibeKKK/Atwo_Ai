@@ -11,7 +11,7 @@
 ## 二、方法（可复跑）
 
 - 标定集：`eval/split-tasks.json`（`contract: atwo-split-calibration/1`），10 个**真实做过的任务**，每个带 `task` 原文（含真实文件路径）、`shouldSplit`、`idealChunks`、`idealGroups`、`why`。形态覆盖：强耦合（split-meter、lane-hard-timeout、reviewer-ledger、mcp-server、lanesnap）、多层但有序（vm-ternary、models-budget）、完全独立（docs-batch 5 份、tests-batch 3 个）、共享同一文件（atwo-verbs）。
-- 跑分脚本：`_probe/split_calib.mjs` → `detectUnits` → `planSplit(task,{cwd,maxChunks:4})` → `checkSplit`，用 Jaccard 最优一一配对算「纯度」，输出 `该切/实切/片数(实际/理想)/单元(实际/理想)/认出全部/纯度/判定`，明细落 `_probe/split_calib_result.json`。
+- 跑分脚本：`eval/split-calib.mjs` → `detectUnits` → `planSplit(task,{cwd,maxChunks:4})` → `checkSplit`，用 Jaccard 最优一一配对算「纯度」，输出 `该切/实切/片数(实际/理想)/单元(实际/理想)/认出全部/纯度/判定`，明细落 `eval/split-calib-result.json`。
 - 判对三件同时成立：该切/不该切判对、片数对、**单元认得全**（漏一个文件就等于有一路白派）。
 
 ## 三、改前：4/10
