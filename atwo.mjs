@@ -84,7 +84,12 @@ function sh(cmd, args, opts = {}) {
 }
 
 // 本机 bash 里没有 python3 别名，必须 py -3
-const py = (args, opts) => sh('py', ['-3', ...args], opts);
+// python 解释器：Windows 上有 py 启动器，Linux/macOS 上没有。
+// 2026-11-17 CI 实测：done 改状态失败 exit 2，根因就是 sh('py') ENOENT —— 而 done 的
+// 状态只写在 task.json，改不动就等于收工不了。ATWO_PYTHON 可覆盖。
+const PY_EXE = process.env.ATWO_PYTHON || (process.platform === 'win32' ? 'py' : 'python3');
+const PY_PREFIX = process.platform === 'win32' ? ['-3'] : [];
+const py = (args, opts) => sh(PY_EXE, [...PY_PREFIX, ...args], opts);
 const orchestra = (args, opts = {}) => {
   const r = sh(process.execPath, [ORCH, ...args], { cwd: HERE, ...opts });
   // capture 模式下子进程的输出进的是 r.out/r.err，不转写就彻底丢了（终端上一个字都看不到）。

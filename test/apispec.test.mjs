@@ -1,8 +1,13 @@
 // test/apispec.test.mjs —— 证明契约校验器真的能拦住错，而不只是能跑通对。
 // 用今晚真实产出的 todo 零件当样本（不是我编的假文件）。
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { checkApiSpec, parseExports, formatApiSpec } from '../lib/apispec.mjs';
 
-const M = 'D:\\ai work replace\\TDW place\\todo-demo\\lib\\todo\\model.mjs';
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+// 样本是仓内 fixture：2026-11-17 CI 实测，原先写死 D:\\ai work replace\\TDW place\\... 绝对路径，
+// Windows 上恰好存在所以一直是绿的，Linux 上直接 ENOENT。
+const M = path.join(HERE, '..', 'fixtures', 'apispec', 'lib', 'todo', 'model.mjs');
 let pass = 0, fail = 0;
 const t = (name, cond, extra) => {
   if (cond) { pass++; console.log('  ✓ ' + name); }

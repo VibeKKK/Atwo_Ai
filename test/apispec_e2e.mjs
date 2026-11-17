@@ -2,9 +2,13 @@
 // 判据很硬：埋的错拦不住，这个模块就等于没写。
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { checkApiSpec, formatApiSpec } from '../lib/apispec.mjs';
 
-const D = 'D:/ai work replace/TDW place/todo-demo';
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+// 仓内 fixture（原来写死 D:/ai work replace/TDW place/todo-demo，CI 上 ENOENT）
+const D = path.join(HERE, '..', 'fixtures', 'apispec');
 const SPEC = {
   'lib/todo/model.mjs': [{ name: 'loadTasks', params: ['filePath'] }, { name: 'saveTasks', params: ['filePath', 'list'] }],
   'lib/todo/args.mjs':  [{ name: 'parseArgs', params: ['argv'] }],
@@ -25,9 +29,7 @@ console.log('  -> ' + okCount + '/' + total + ' 通过');
 
 console.log('');
 console.log('=== 第二轮：埋 2 个错，看能不能拦住 ===');
-const tmp = path.join(D, '.contract-test');
-fs.rmSync(tmp, { recursive: true, force: true });
-fs.mkdirSync(tmp, { recursive: true });
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'apispec-e2e-'));
 
 // 错 1：参数改名（名字对、签名错 —— 两边都能过 node --check，拼起来才炸）
 const src1 = fs.readFileSync(path.join(D, 'lib/todo/model.mjs'), 'utf8')

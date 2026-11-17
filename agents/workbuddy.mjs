@@ -18,8 +18,25 @@ import { config } from '../lib/config.mjs';
 
 // ws 不装进本仓库（保持零依赖），从 DSH profile 的 node_modules 里借；
 // 路径由 lib/config.mjs 给出（DSH_HOME / config.local.json 的 dshRoot 可覆盖）。
-const require = createRequire(path.join(config.dshRoot, 'profiles', 'desktop', 'node_modules') + path.sep);
-const WebSocket = require('ws');
+const requireProfile = createRequire(path.join(config.dshRoot, 'profiles', 'desktop', 'node_modules') + path.sep);
+// ws 不装进本仓库（保持零依赖），从 DSH profile 的 node_modules 借。
+// 但「借得到」是这台机器的运气，不是仓库的性质：干净机器上没有 ws。
+// 2026-11-17 CI 实测：顶层 require 让任何 import 本模块的代码一起崩
+// （atwo raw stats 与 swarm_salvage 测试都因此 MODULE_NOT_FOUND，code 又是 MODULE_NOT_FOUND）。
+// 所以改成用的时候才加载：加载不到只让这条通道不可用，别的照常。
+let WebSocketImpl = null;
+let wsLoadError = null;
+function WebSocketCtor() {
+  if (WebSocketImpl) return WebSocketImpl;
+  if (wsLoadError) throw wsLoadError;
+  try {
+    WebSocketImpl = requireProfile('ws');
+  } catch (e) {
+    wsLoadError = new Error('ws 模块不可用（本仓库零依赖，ws 从 DSH profile 的 node_modules 借）：' + e.message + '。workbuddy 通道因此不可用，其他通道与 atwo 本身不受影响。');
+    throw wsLoadError;
+  }
+  return WebSocketImpl;
+}
 
 const PORT = Number(process.env.WB_PORT || 9224);
 const EXE = process.env.WB_EXE || config.workbuddyExe || 'D:\\code app\\ai code\\WorkBuddy\\WorkBuddy.exe';
@@ -135,7 +152,7 @@ async function pageWsUrl() {
 
 async function connect() {
   const url = await pageWsUrl();
-  const ws = new WebSocket(url, { origin: 'http://localhost' });
+  const ws = new (WebSocketCtor())(url, { origin: 'http://localhost' });
   await new Promise((res, rej) => { ws.on('open', res); ws.on('error', rej); });
   let seq = 0;
   const send = (method, params = {}) => new Promise((resolve, reject) => {
