@@ -1,0 +1,77 @@
+// test/fanout_hetero.test.mjs —— 父审必须默认与主力异源，且「退回同源」必须留痕。
+//
+// 2026-11-18 查出的两个洞：
+// ① pickReviewLane(cwd) 不知道主力是谁，可能挑中同一条通道 —— 自审只能抓矛盾与硬错；
+// ② 不显式给 --review-lane 时 reviewAsk 用的是**主力**的 ask，标签写 A、实际用 B 审。
+//    产物层面完全看不出来，读的人会以为有人交叉核过。
+import assert from 'node:assert';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { pickReviewLane, runFanout } from '../lib/fanout-run.mjs';
+
+let pass = 0, fail = 0;
+async function ta(name, fn) { try { await fn(); pass += 1; console.log('  ✓ ' + name); } catch (e) { fail += 1; console.log('  ✗ ' + name + ' — ' + ((e && e.message) || e)); } }
+console.log('fanout hetero reviewer');
+
+// 台账要造在临时 cwd 里：memory/ 在 .gitignore 里，测试绝不能往真仓库写运行时证据。
+function tmpLedger(rows) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'atwo-hetero-'));
+  fs.mkdirSync(path.join(dir, 'memory'), { recursive: true });
+  const now = new Date().toISOString();
+  const lines = [];
+  for (const r of rows) {
+    for (let i = 0; i < (r.n || 3); i += 1) {
+      lines.push(JSON.stringify({ v: 1, contract: 'atwo-reviewer-ledger/1', ts: now, lane: r.lane, ok: true, ms: r.ms, reason: 'ok', chunks: 1, source: 'fanout' }));
+    }
+  }
+  fs.writeFileSync(path.join(dir, 'memory', 'reviewer-ledger.jsonl'), lines.join('\n') + '\n', 'utf8');
+  return dir;
+}
+
+
+
+await ta('台账里两条都可用 → 默认挑最快的那条', async () => {
+  const dir = tmpLedger([{ lane: 'codebuddy', ms: 1000 }, { lane: 'trae', ms: 50000 }]);
+  assert.strictEqual(pickReviewLane(dir), 'codebuddy');
+});
+
+await ta('主力是 codebuddy 时必须避开它 → 挑 trae', async () => {
+  const dir = tmpLedger([{ lane: 'codebuddy', ms: 1000 }, { lane: 'trae', ms: 50000 }]);
+  assert.strictEqual(pickReviewLane(dir, { avoid: ['codebuddy'] }), 'trae', '主力通道不许当自己的父审');
+});
+
+await ta('只有主力一条可用时退回它，而不是瞎挑一条', async () => {
+  const dir = tmpLedger([{ lane: 'codebuddy', ms: 1000 }]);
+  assert.strictEqual(pickReviewLane(dir, { avoid: ['codebuddy'] }), 'codebuddy');
+});
+
+const childAsk = async () => ({ ok: true, addedText: 'ANSWER:\n答案\nEVIDENCE:\natwo.mjs:190 const EXIT' });
+const reviewAsk = async () => ({ ok: true, addedText: JSON.stringify({ reviews: [{ id: 'child-1', verdict: 'PASS', why: 'w' }, { id: 'child-2', verdict: 'PASS', why: 'w' }] }) });
+const PROBES = [{ lane: 'codebuddy', ready: true, parallel: 6, quality: 'high', roles: ['writer', 'review'] }];
+
+await ta('自动挑选的通道起不来 → 如实退回主力并留 reviewFallback（不许装异源）', async () => {
+  // 台账里混进一条「名字解析不了」的通道（历史遗留/拼错都会这样）：
+  // 自动挑选会把它排在前面，但它根本起不来 —— 这时退回主力是对的，装异源是错的。
+  const dir = tmpLedger([{ lane: 'ghost-lane', ms: 100 }, { lane: 'codebuddy', ms: 1000 }]);
+  const r = await runFanout({ cwd: dir, task: 't', parts: 2, lanes: ['codebuddy'], autoLanes: false, probes: PROBES, ask: childAsk, preGate: false, reviewChunk: 0 });
+  assert.strictEqual(r.reviewLane, 'codebuddy', '退回时 reviewLane 必须是真实在用的那条');
+  assert.strictEqual(r.reviewWanted, 'ghost-lane', '原本想要的那条要留着，否则无从解释为什么同源');
+  assert.ok(r.reviewFallback && String(r.reviewFallback).length > 0, '退回原因必须落成字段');
+  assert.strictEqual(r.homogeneous, true, '退回主力就是同源，不许标异源');
+});
+
+await ta('显式 --review-lane 指向不存在的通道 → 抛，不许悄悄换人', async () => {
+  await assert.rejects(
+    () => runFanout({ task: 't', parts: 2, lanes: ['codebuddy'], autoLanes: false, probes: PROBES, ask: childAsk, reviewLane: 'no-such-lane', preGate: false, reviewChunk: 0 }),
+    /没有这个通道|no-such-lane/,
+  );
+});
+await ta('源码守卫：父审 ask 不许在不知道主力的情况下定下来', async () => {
+  const src = fs.readFileSync(new URL('../lib/fanout-run.mjs', import.meta.url), 'utf8');
+  assert.ok(!/opts\.reviewLane \? resolveAsk\(opts\.reviewLane\) : ask/.test(src), '旧写法：挑的是 A 通道、用的却是主力的 ask');
+  assert.ok(/avoid: mainLanes/.test(src), 'pickReviewLane 必须收到主力名单');
+});
+
+console.log('\n' + pass + ' 通过 / ' + fail + ' 失败');
+process.exitCode = fail ? 1 : 0;
