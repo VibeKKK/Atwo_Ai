@@ -34,6 +34,7 @@ import { makeArmyVerb } from './lib/army-cli.mjs';
 import { makeTriageVerb } from './lib/triage-cli.mjs';
 import { makeBlindVerb } from './lib/blind-objective.mjs';
 import { lanesSnapshot, renderLanes } from './lib/lanesnap.mjs';
+import { makeBoardVerb } from './lib/board-cli.mjs';
 import { installHooks, hookStatus, removeHooks, formatHookStatus, formatInstall } from './lib/hooks.mjs';
 import { VERBS, GLOBAL_FLAGS, EXIT_CODES, LIMITS, isHelp, checkFlags, positional, specOf, formatSpec, capsJson, valueFlagsOf } from './lib/cli-spec.mjs';
 import { detectEnvironment, quickSelfCheck } from './lib/bootstrap.mjs';
@@ -1666,13 +1667,15 @@ function cmdModels(args = []) {
   });
 }
 
+const cmdBoard = makeBoardVerb({ cwd: HERE, EXIT });
+
 function cmdSnapshot() {
   const snap = lanesSnapshot({ cwd: HERE });
   console.log(renderLanes(snap));
   RESULT.data.snapshot = snap;
   return EXIT.ok;
 }
-const table = { doctor: cmdDoctor, queue: cmdQueue, cost: cmdCost, pool: cmdPool, review: cmdReview, should: cmdShould, gate: cmdGate, hooks: cmdHooks, try: cmdTry, new: cmdNew, batch: cmdBatch, go: cmdGo, check: cmdCheck, diff: cmdDiff, judge: cmdJudge, attest: cmdAttest, models: cmdModels, snapshot: cmdSnapshot, score: cmdScore, pitfall: cmdPitfall, army: cmdArmy, triage: cmdTriage, blind: cmdBlind, fanout: cmdFanout, done: cmdDone, state: cmdState, mode: cmdMode, raw: cmdRaw };
+const table = { doctor: cmdDoctor, queue: cmdQueue, cost: cmdCost, pool: cmdPool, review: cmdReview, should: cmdShould, gate: cmdGate, hooks: cmdHooks, try: cmdTry, new: cmdNew, batch: cmdBatch, go: cmdGo, check: cmdCheck, diff: cmdDiff, judge: cmdJudge, attest: cmdAttest, models: cmdModels, snapshot: cmdSnapshot, board: cmdBoard, score: cmdScore, pitfall: cmdPitfall, army: cmdArmy, triage: cmdTriage, blind: cmdBlind, fanout: cmdFanout, done: cmdDone, state: cmdState, mode: cmdMode, raw: cmdRaw };
 
 /** 打印规格：人读走 stdout，机器读塞进 RESULT.data（由统一收尾出 JSON）。 */
 function printSpec(target) {
