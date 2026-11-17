@@ -49,7 +49,8 @@ const savedMode = hadMode ? fs.readFileSync(MODE, 'utf8') : null;
 try {
   // 让 go 不要求「有进行中的任务」：mode off 只影响派活前的检查
   fs.mkdirSync(path.dirname(MODE), { recursive: true });
-  fs.writeFileSync(MODE, JSON.stringify({ name: 'off' }), 'utf8');
+  // 字段名是 mode：readMode() 读 j.mode —— 写成 name 等于没关流程（2026-11-17 干净检出实证）。
+fs.writeFileSync(MODE, JSON.stringify({ mode: 'off', since: new Date().toISOString(), by: 'test' }), 'utf8');
 
   t('超时但产物已落 + 语法过 → ok，退出码 0', () => {
     fs.rmSync(probe, { force: true });

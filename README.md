@@ -228,7 +228,7 @@ eval/                  24 任务评测集与结果
 ## 纪律
 
 - 派活前先 `orch ctx "<任务>"` 看注入预算，零成本。
-- 改 `orchestra.mjs` / `pr.mjs` / `collab/authority.json` / `package.json` 属 protected 级，走 PR 审阅门，rank1 放行。
+- 改 `orchestra.mjs` / `pr.mjs` / `collab/authority.json` / `package.json` 属 protected 级，走 PR 审阅门，由管理员放行。
 - 项目状态不靠记忆：开工 `node resume.mjs list`，收工 `resume.mjs next` + `note`。
 - 查询类命令一律优先用 `--json` 取值，不要解析中文文本。
 

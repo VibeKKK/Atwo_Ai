@@ -16,6 +16,10 @@ const ok = (c, m) => { if (c) { pass += 1; } else { fail += 1; console.log('  �
 
 // 1. 被 .gitignore 命中的文件不该派下去（子会话的 Glob 看不见它们 → 必然假 REVISE）
 {
+  // 干净 clone 里没有 *.codebuddy.mjs 这类草稿（都被 gitignore），必须自己造一个，
+  // 否则「过滤生效」这条断言恒假（raw.length === withIgnore.length）。
+  const draft = path.join(root, 'lib', '_obs_draft.codebuddy.mjs');
+  fs.writeFileSync(draft, 'export const draft = 1;' + String.fromCharCode(10), 'utf8');
   const withIgnore = detectUnits('统计 lib/*.mjs 全部文件', { cwd: root });
   const raw = detectUnits('统计 lib/*.mjs 全部文件', { cwd: root, keepIgnored: true });
   ok(raw.length > withIgnore.length, '1 keepIgnored 时单元更多（' + raw.length + ' > ' + withIgnore.length + '）');

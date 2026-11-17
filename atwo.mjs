@@ -979,11 +979,13 @@ async function cmdAttest(args) {
   const judgeLedger = path.resolve(HERE, 'memory/attest-judge.jsonl');
   const files = readAttestations(fileLedger);
   const res = auditAttestations(files, { cwd: HERE });
-  let judge = { checked: 0, ok: 0, bad: [] };
+  // 形状必须与「有凭证」时一致：调用方不该每次判字段在不在（2026-11-17 干净检出实证：
+  // 无 memory/attest-judge.jsonl 时 contract / legacy 整个消失，机器可读出口随环境变形）。
+  const { CONTRACT_HASH, CONTRACT } = await import('./vm/judge.mjs');
+  const judge = { checked: 0, ok: 0, bad: [], legacy: [], contract: { version: CONTRACT.contractVersion, hash: CONTRACT_HASH.slice(0, 12) } };
   const jEntries = readAttestations(judgeLedger);
   if (jEntries.length) {
     const { verifyAttestation } = await import('./vm/attest.mjs');
-    const { CONTRACT_HASH, CONTRACT } = await import('./vm/judge.mjs');
     const R = {
       'contract-unbound': '没绑契约哈希（v1 凭证，管不到尺子变化）',
       'contract-changed': '契约内容已变（尺子换了，这份凭证的结论不再代表现在）',
@@ -991,8 +993,6 @@ async function cmdAttest(args) {
       'recompute-mismatch': '重算结果不一致',
     };
     judge.checked = jEntries.length;
-    judge.contract = { version: CONTRACT.contractVersion, hash: CONTRACT_HASH.slice(0, 12) };
-    judge.legacy = [];
     for (const e of jEntries) {
       const v = verifyAttestation(e, { contractHash: CONTRACT_HASH });
       if (v.ok) judge.ok += 1;

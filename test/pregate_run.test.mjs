@@ -59,9 +59,11 @@ test('影子副本：真仓库不动，副本内容与真文件一致', () => {
     assert.equal(sh.ok, true, sh.reason);
     const a = runSandboxed('node --check lib/pregate.mjs', { cwd: sh.dir });
     assert.equal(a.code, 0, '副本里也要能跑');
-    const real = fsSync.readFileSync('lib/pregate.mjs', 'utf8').length;
-    const copy = fsSync.readFileSync(sh.dir + '/lib/pregate.mjs', 'utf8').length;
-    assert.equal(copy, real, '副本必须与工作区同字节（含未提交改动）');
+    // 影子副本走 git worktree 且显式 core.autocrlf=false / core.eol=lf（lib/worktree.mjs:97），
+    // 所以副本是 LF、工作区可能是 CRLF —— 要比的是「内容一致（含未提交改动）」，不是行尾字节。
+    const real = fsSync.readFileSync('lib/pregate.mjs', 'utf8');
+    const copy = fsSync.readFileSync(sh.dir + '/lib/pregate.mjs', 'utf8');
+    assert.deepEqual(copy.split(/\r?\n/), real.split(/\r?\n/), '副本内容必须与工作区一致（含未提交改动）');
   } finally { sh.cleanup(); }
 });
 

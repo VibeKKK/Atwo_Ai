@@ -6,7 +6,7 @@ const TARGET_RE = /((?:lib|docs|agents|eval|collab|memory|tools)\/[A-Za-z0-9_.\/
 let pass = 0, fail = 0;
 const ok = (n, c, x = '') => { if (c) { pass++; console.log('  ✓ ' + n); } else { fail++; console.log('  ✗ ' + n + '  ' + x); } };
 
-const one = loadTasks('_probe/par3.md');
+const one = loadTasks('fixtures/tasks/par3.md');
 ok('单个 md 任务 + 正文列表 → 只切出 1 段', one.length === 1, '切出 ' + one.length + ' 段');
 ok('标题被拼回正文首行', /par_num\.mjs/.test(one[0].split('\n')[0]), JSON.stringify(one[0].split('\n')[0]));
 ok('land 能从段里找到目标路径', (one[0].match(TARGET_RE) || [])[1] === 'lib/par_num.mjs', String((one[0].match(TARGET_RE) || [])[1]));

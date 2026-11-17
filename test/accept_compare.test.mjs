@@ -14,10 +14,10 @@ function check(name, ok, detail) {
   else { fail++; bad.push(name + (detail ? ' -> ' + detail : '')); console.log('  NG  ' + name + (detail ? ' -> ' + detail : '')); }
 }
 
-const A = path.join(ROOT, '_probe', 'cmp_a.mjs');
-const B = path.join(ROOT, '_probe', 'cmp_b.mjs');
-const SAME = path.join(ROOT, '_probe', 'cmp_a_same.mjs');
-const CASES = path.join(ROOT, '_probe', 'cmp_cases.mjs');
+const A = path.join(ROOT, 'fixtures', 'accept', 'cmp_a.mjs');
+const B = path.join(ROOT, 'fixtures', 'accept', 'cmp_b.mjs');
+const SAME = path.join(os.tmpdir(), 'atwo_cmp_same_' + process.pid + '.mjs');
+const CASES = path.join(ROOT, 'fixtures', 'accept', 'cmp_cases.mjs');
 fs.writeFileSync(SAME, fs.readFileSync(A, 'utf8'), 'utf8');
 
 // 1) 两份写同一个意思（n*2 与 n+n）→ 对拍必须过

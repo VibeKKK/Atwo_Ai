@@ -48,8 +48,9 @@ ok('不认识的动词 → 退出码 2，JSON 里 ok=false', () => {
   assert.equal(r.json.exitCode, 2);
 });
 
-ok('check 缺参数 → 退出码 2', () => {
-  assert.equal(run(['check']).code, 2);
+ok('check 缺参数 → 非零（无任务 3=前置不满足 / 有任务 2=用法错，都不许 0）', () => {
+  const code = run(['check']).code;
+  assert.ok([2, 3].includes(code), 'code=' + code);
 });
 
 ok('done 不带确认 → 退出码 2（不许不问就结）', () => {

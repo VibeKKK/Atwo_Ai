@@ -7,7 +7,11 @@ import { spawnSync } from 'node:child_process';
 const HERE = path.resolve(import.meta.dirname, '..');
 const ATWO = path.join(HERE, 'atwo.mjs');
 const MODE = path.join(HERE, '.atw', 'mode.json');
-const PRD = '.atw/tasks/11-16-atwo-i234fz/prd.md';
+// PRD 必须由测试自己造：原先指向 .atw/tasks/11-16-atwo-i234fz/prd.md（运行时目录，被 gitignore），
+// 干净 clone 里不存在 → go 一律退 3，五条断言全红（2026-11-17 干净检出实证）。
+const PRD = '.atw/tasks/_mode_fixture/prd.md';
+fs.mkdirSync(path.join(HERE, '.atw', 'tasks', '_mode_fixture'), { recursive: true });
+fs.copyFileSync(path.join(HERE, 'fixtures', 'tasks', 'mode_prd.md'), path.join(HERE, PRD));
 const EMPTY = path.join(HERE, 'test', '_tmp_empty_tasks');
 
 const run = (args, extraEnv = {}) => {

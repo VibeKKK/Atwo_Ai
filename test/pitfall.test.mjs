@@ -88,6 +88,7 @@ function run(args, env = {}) {
   fs.mkdirSync(prdDir, { recursive: true });
   const prd = path.join(prdDir, 'prd.md');
   fs.writeFileSync(prd, '# 探针\n要求：写一个补丁脚本改 lib/probe_pf.mjs\n', 'utf8');
+  run(['mode', 'off']); // 干净 clone 里没有进行中的任务，strict 会让 go 退 3（前置不满足）
   const r = run(['go', prd, '--size', 'S', '--plan']);
   check('plan exit 0', r.code === 0, 'code=' + r.code);
   check('plan 提示头号坑', r.out.includes('头号坑'), r.out.slice(0, 120));
@@ -96,6 +97,7 @@ function run(args, env = {}) {
   const prd2 = path.join(prdDir, 'prd2.md');
   fs.writeFileSync(prd2, '# 无关任务\n要求：写 lib/probe_zz.mjs\n', 'utf8');
   const r2 = run(['go', prd2, '--size', 'S', '--plan']);
+  run(['mode', 'strict']);
   check('未命中不打头号坑', !r2.out.includes('头号坑'), r2.out.slice(0, 120));
 }
 
