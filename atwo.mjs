@@ -26,6 +26,8 @@ import { makeFanoutVerb } from './lib/fanout-cli.mjs';
 import { makeQueueVerb } from './lib/queue-cli.mjs';
 import { makeCostVerb } from './lib/cost-cli.mjs';
 import { makePoolVerb } from './lib/pool-cli.mjs';
+import { makeReviewVerb } from './lib/review-cli.mjs';
+import { resolveAsk } from './lib/lanes.mjs';
 import { makeArmyVerb } from './lib/army-cli.mjs';
 import { makeTriageVerb } from './lib/triage-cli.mjs';
 import { installHooks, hookStatus, removeHooks, formatHookStatus, formatInstall } from './lib/hooks.mjs';
@@ -259,7 +261,7 @@ const MODES = {
 /** size 决定闸门硬度。S 单路不评、M 两路一评、L 四路两评。 */
 const SIZE_PLAN = {
   S: { lanes: ['codebuddy'], review: 0 },
-  M: { lanes: ['codebuddy', 'trae'], review: 1 },
+  M: { lanes: ['codebuddy'], review: 1 }, // 2026-11-17：去掉常空产出的 trae，评审由 probeReviewers 另挑
   L: { lanes: null, review: 2 }, // null = 四路全上
 };
 
@@ -517,7 +519,7 @@ async function cmdGo(args) {
   const src = rest1.filter((a) => !a.startsWith('--'));
   // --agent 不透传：路数由档位决定。放行它会让「本次：N 路」这行打印与真实参数对不上，
   // 而用户唯一能核对的就是那行（PRD R6）。
-  const passThrough = rest1.filter((a) => a.startsWith('--') && !a.startsWith('--agent') && a !== '--plan');
+  const passThrough = rest1.filter((a) => a.startsWith('--') && !a.startsWith('--agent') && a !== '--plan' && a !== '--all-lanes');
 
   const t = activeTask();
   if (!t && mode.name !== 'off') {
@@ -549,12 +551,15 @@ async function cmdGo(args) {
   // 2026-11-16：--agent 允许显式指定，而且必须让下面的「本次：N 路」跟着变
   const { val: agentRaw } = takeOpt(rest1, '--agent');
   let lanes = plan.lanes || ALL_LANES;
+  // 2026-11-17：--all-lanes 强制四路并派（S/M 默认单/双路；L 档本来就是四路）
+  if (!agentRaw && process.argv.includes('--all-lanes')) lanes = ALL_LANES;
   // 2026-11-17 速度优先：S/M 档默认只派一路（codebuddy）。
   // 依据（同机实测）：单件派活 codebuddy CLI 33.3s 出活；GUI 三通道空产出/超时 281.4s / 309.9s / 300s。
   // 四路并派在 S/M 上是「花四份时间买一份答案」，多视角只在 L 档（--size L）或 crazy 档才有意义。
   // 想强行四路：--all-lanes；想指定某几路：--agent a,b。
   if (!agentRaw && !plan.lanes) {
-    lanes = mode.name === 'crazy' || size === 'L' || rest1.includes('--all-lanes') ? ALL_LANES : FAST_LANES;
+    const wantAll = process.argv.includes('--all-lanes') || process.env.ATWO_ALL_LANES === '1';
+    lanes = mode.name === 'crazy' || size === 'L' || wantAll ? ALL_LANES : FAST_LANES;
   }
   if (agentRaw) {
     const picked = String(agentRaw).split(',').map((x) => x.trim()).filter(Boolean);
@@ -621,6 +626,7 @@ async function cmdGo(args) {
   console.log('▶ 本次：' + lanes.length + ' 路（' + lanes.join(', ') + '）· 验收五层 · '
     + (plan.review > 0 ? '评审 ' + plan.review + ' 个' : '不评')
     + (agentRaw ? ' · 显式 --agent' : '')
+    + (!agentRaw && lanes.length === 1 ? ' · 默认单路（--all-lanes 可四路并派）' : '')
     + (mode.name === 'crazy' ? ' · 超时 ×1.5 · 禁缓存' : ''));
 
   console.log('▶ 超时：' + Object.entries(env)
@@ -1564,6 +1570,7 @@ const cmdFanout = makeFanoutVerb({ EXIT, RESULT, HERE, die, activeTask });
 const cmdQueue = makeQueueVerb({ EXIT, RESULT, HERE, die });
 const cmdCost = makeCostVerb({ EXIT, RESULT, HERE, die });
 const cmdPool = makePoolVerb({ EXIT, RESULT, HERE, die });
+const cmdReview = makeReviewVerb({ EXIT, RESULT, HERE, die, resolveAsk });
 const cmdArmy = makeArmyVerb({ EXIT, RESULT, HERE, die, activeTask });
 const cmdTriage = makeTriageVerb({ EXIT, RESULT, HERE, die });
 
@@ -1599,7 +1606,7 @@ function cmdModels(args = []) {
   });
 }
 
-const table = { doctor: cmdDoctor, queue: cmdQueue, cost: cmdCost, pool: cmdPool, should: cmdShould, gate: cmdGate, hooks: cmdHooks, try: cmdTry, new: cmdNew, batch: cmdBatch, go: cmdGo, check: cmdCheck, diff: cmdDiff, judge: cmdJudge, attest: cmdAttest, models: cmdModels, score: cmdScore, pitfall: cmdPitfall, army: cmdArmy, triage: cmdTriage, fanout: cmdFanout, done: cmdDone, state: cmdState, mode: cmdMode, raw: cmdRaw };
+const table = { doctor: cmdDoctor, queue: cmdQueue, cost: cmdCost, pool: cmdPool, review: cmdReview, should: cmdShould, gate: cmdGate, hooks: cmdHooks, try: cmdTry, new: cmdNew, batch: cmdBatch, go: cmdGo, check: cmdCheck, diff: cmdDiff, judge: cmdJudge, attest: cmdAttest, models: cmdModels, score: cmdScore, pitfall: cmdPitfall, army: cmdArmy, triage: cmdTriage, fanout: cmdFanout, done: cmdDone, state: cmdState, mode: cmdMode, raw: cmdRaw };
 
 /** 打印规格：人读走 stdout，机器读塞进 RESULT.data（由统一收尾出 JSON）。 */
 function printSpec(target) {
