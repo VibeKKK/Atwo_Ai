@@ -43,20 +43,20 @@ t('3 路全给 codebuddy（质量优先，不为了免费去开本地小模型�
 });
 
 t('10 路：codebuddy 6 + ollama 溢出 4', () => {
-  const probes = [{ lane: 'codebuddy', ready: true }, { lane: 'codex', ready: false, reason: 'app-server' }, { lane: 'ollama', ready: true }];
+  const probes = [{ lane: 'codebuddy', ready: true }, { lane: 'deepseek', ready: false, reason: 'key 没配' }, { lane: 'codex', ready: false, reason: 'app-server' }, { lane: 'ollama', ready: true }];
   const { plan, unassigned } = planLanes(10, { probes });
   assert.equal(describePlan(plan), 'codebuddy×6 + ollama×4');
   assert.equal(unassigned, 0);
 });
 
 t('探测说不行就不派（codex 跳过）', () => {
-  const probes = [{ lane: 'codebuddy', ready: false, reason: 'x' }, { lane: 'codex', ready: false, reason: 'y' }, { lane: 'ollama', ready: true }];
+  const probes = [{ lane: 'codebuddy', ready: false, reason: 'x' }, { lane: 'deepseek', ready: false, reason: 'k' }, { lane: 'codex', ready: false, reason: 'y' }, { lane: 'ollama', ready: true }];
   const { plan } = planLanes(4, { probes });
   assert.equal(plan[0].lane, 'ollama');
 });
 
 t('一路都派不出去时抛错并带上原因', () => {
-  const probes = [{ lane: 'codebuddy', ready: false, reason: 'CLI 不在' }, { lane: 'codex', ready: false, reason: '起不来' }, { lane: 'ollama', ready: false, reason: '服务没跑' }];
+  const probes = [{ lane: 'codebuddy', ready: false, reason: 'CLI 不在' }, { lane: 'deepseek', ready: false, reason: 'key 没配' }, { lane: 'codex', ready: false, reason: '起不来' }, { lane: 'ollama', ready: false, reason: '服务没跑' }];
   assert.throws(() => planLanes(2, { probes }), /没有可用通道[\s\S]*CLI 不在/);
 });
 
