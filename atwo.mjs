@@ -24,6 +24,8 @@ import { quotaRecord, appendQuota } from './lib/quota-log.mjs';
 import { selfLanded, detectTarget } from './lib/land.mjs';
 import { makeFanoutVerb } from './lib/fanout-cli.mjs';
 import { makeQueueVerb } from './lib/queue-cli.mjs';
+import { makeCostVerb } from './lib/cost-cli.mjs';
+import { makePoolVerb } from './lib/pool-cli.mjs';
 import { makeArmyVerb } from './lib/army-cli.mjs';
 import { makeTriageVerb } from './lib/triage-cli.mjs';
 import { installHooks, hookStatus, removeHooks, formatHookStatus, formatInstall } from './lib/hooks.mjs';
@@ -478,6 +480,10 @@ function writeLedger(task, code) {
 }
 
 const ALL_LANES = ['codebuddy', 'trae', 'workbuddy', 'doubao'];
+// 2026-11-17：默认档只派这一路。它是唯一「CLI 直连、无 GUI 触摸、实测 33s 出活」的通道；
+// GUI 三通道要先点界面、再等首字节，空产出与 300s 超时是常态（见 memory/log.jsonl）。
+// 想要多视角就升档（--size L / crazy），别在 S/M 上白烧。
+const FAST_LANES = ['codebuddy'];
 const DEFAULT_TIMEOUTS = {
   ORCH_TIMEOUT_TRAE: 120000,
   ORCH_TIMEOUT_DOUBAO: 120000,
@@ -543,6 +549,13 @@ async function cmdGo(args) {
   // 2026-11-16：--agent 允许显式指定，而且必须让下面的「本次：N 路」跟着变
   const { val: agentRaw } = takeOpt(rest1, '--agent');
   let lanes = plan.lanes || ALL_LANES;
+  // 2026-11-17 速度优先：S/M 档默认只派一路（codebuddy）。
+  // 依据（同机实测）：单件派活 codebuddy CLI 33.3s 出活；GUI 三通道空产出/超时 281.4s / 309.9s / 300s。
+  // 四路并派在 S/M 上是「花四份时间买一份答案」，多视角只在 L 档（--size L）或 crazy 档才有意义。
+  // 想强行四路：--all-lanes；想指定某几路：--agent a,b。
+  if (!agentRaw && !plan.lanes) {
+    lanes = mode.name === 'crazy' || size === 'L' || rest1.includes('--all-lanes') ? ALL_LANES : FAST_LANES;
+  }
   if (agentRaw) {
     const picked = String(agentRaw).split(',').map((x) => x.trim()).filter(Boolean);
     const bad = picked.filter((x) => !ALL_LANES.includes(x));
@@ -1549,6 +1562,8 @@ if (JSON_MODE) {
 
 const cmdFanout = makeFanoutVerb({ EXIT, RESULT, HERE, die, activeTask });
 const cmdQueue = makeQueueVerb({ EXIT, RESULT, HERE, die });
+const cmdCost = makeCostVerb({ EXIT, RESULT, HERE, die });
+const cmdPool = makePoolVerb({ EXIT, RESULT, HERE, die });
 const cmdArmy = makeArmyVerb({ EXIT, RESULT, HERE, die, activeTask });
 const cmdTriage = makeTriageVerb({ EXIT, RESULT, HERE, die });
 
@@ -1584,7 +1599,7 @@ function cmdModels(args = []) {
   });
 }
 
-const table = { doctor: cmdDoctor, queue: cmdQueue, should: cmdShould, gate: cmdGate, hooks: cmdHooks, try: cmdTry, new: cmdNew, batch: cmdBatch, go: cmdGo, check: cmdCheck, diff: cmdDiff, judge: cmdJudge, attest: cmdAttest, models: cmdModels, score: cmdScore, pitfall: cmdPitfall, army: cmdArmy, triage: cmdTriage, fanout: cmdFanout, done: cmdDone, state: cmdState, mode: cmdMode, raw: cmdRaw };
+const table = { doctor: cmdDoctor, queue: cmdQueue, cost: cmdCost, pool: cmdPool, should: cmdShould, gate: cmdGate, hooks: cmdHooks, try: cmdTry, new: cmdNew, batch: cmdBatch, go: cmdGo, check: cmdCheck, diff: cmdDiff, judge: cmdJudge, attest: cmdAttest, models: cmdModels, score: cmdScore, pitfall: cmdPitfall, army: cmdArmy, triage: cmdTriage, fanout: cmdFanout, done: cmdDone, state: cmdState, mode: cmdMode, raw: cmdRaw };
 
 /** 打印规格：人读走 stdout，机器读塞进 RESULT.data（由统一收尾出 JSON）。 */
 function printSpec(target) {
