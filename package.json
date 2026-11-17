@@ -1,9 +1,9 @@
 {
   "name": "orchestra",
-  "version": "0.1.0",
+  "version": "0.2.0-alpha",
   "private": false,
   "type": "module",
-  "description": "本机 AI 协作台：把任务派给真实在跑的多个 AI 客户端（Trae / CodeBuddy / WorkBuddy），产出收回、契约校验、预算记账、提案审阅。零依赖、零服务、不加锁。",
+  "description": "本机 AI 协作台：把任务派给真实在跑的多个 AI 客户端，产出收回、契约校验、预算记账、提案审阅；判定走三值字节码机、凭证可复算。零依赖、零服务。",
   "keywords": [
     "ai-agents",
     "orchestration",

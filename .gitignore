@@ -66,3 +66,17 @@ memory/log.codebuddy.js
 
 # 盲测跑出来的明细（每次都变，不是源码；manifest 与对照组产物要进库）
 eval/*-report.json
+
+# ── 发布前清理（2026-11-17）：内部信、运行时明细、一次性脚本一律不进库
+collab/archive/
+collab/peers.json
+collab/trae.mjs.rank1-*
+.atw/jobs/
+collab/.read.json
+memory/_probe/
+memory/self-answers/
+memory/SELF.md
+memory/.wb-targets.json
+eval/blind-objective.json
+_append_shared.mjs
+_mk_baseline.mjs

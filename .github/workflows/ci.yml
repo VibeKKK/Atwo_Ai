@@ -1,0 +1,32 @@
+name: ci
+
+# 为什么分两条命令：gate 查的是「结构坏了」（闭包/语法/具名导出/契约/VM 参考向量/污染），
+# test 查的是「行为变了」。两者分开跑，失败日志一眼能分辨是哪一类。
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20, 22]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Show Node version
+        run: node --version
+
+      - name: Structural gate (closure / syntax / exports / contract / vm-smoke / pollution)
+        run: node atwo.mjs gate --no-tests
+
+      - name: Behavior tests
+        run: node test/all.mjs

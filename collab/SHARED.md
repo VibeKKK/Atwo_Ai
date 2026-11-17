@@ -165,3 +165,33 @@ node eval/run.mjs --selftest | --run --agent <name> --limit N
 - trae 8 题基线：单题超时降到 90s、总超时 ≥1200s，或分批 4+4，别指望一次跑完。
 - A4 多文件自改还没一次真产出（解析器支持，缺端到端证据）。
 - `atw_*` 工具要等 DSH 重启才出现在工具列表。
+---
+
+## rank2 本班：四路模型全部可换 + size/failover 分开存
+
+### 已完成
+| 项 | 结果 | 证据 |
+|---|---|---|
+| doubao 换模型 | 点输入框右下角「自动」，11 项带真实倍率 | `setModel('豆包 2.1 Lite')` → `{ok:true, from:'GLM 5.3 Flash高', to:'豆包 2.1 Lite高'}` |
+| trae 换模型 | **关掉「Auto」开关**后出 18 项 | `setModel('Seed-Code')` → `{ok:true, from:'GLM-5.3-Flash', to:'Seed-Code'}` |
+| size / failover 分家 | `size` 写 task.json（派活前）；`failover` 只进运行记录（失败后） | `lib/swarm.mjs` 的 `rec.failover`；`orchestra.mjs` 的 `entry.model` |
+| 故障切换接 codebuddy | 超时/失败先同通道换模型再换通道 | `nextModelFor('codebuddy',{current:'deepseek-v4.1-flash'})` → `hy4std` |
+
+### 四条通道可切换现状
+| 通道 | 池子 | 故障切换 |
+|---|---|---|
+| codebuddy | 14 | ✅（一进程一模型，并发安全） |
+| workbuddy | 17 | ✗ 界面全局状态 |
+| doubao | 10 | ✗ 同上 |
+| trae | 18 | ✗ 同上 |
+
+### 留给下一班
+- trae-http：鉴权链已通到 200，卡在 body 必填参数。**别再枚举值，直接挂 mitmproxy**（mihomo 在 7890）。
+- workbuddy / doubao / trae 的故障切换：要先做「每路独立模型上下文」，那是新机制不是参数。
+- `.atw/tasks/` 里 `11-16-atwo-v1` 与 `11-16-atwo-i2ilfe` 两件都还没结，等 rank1 定谁结。
+
+### 踩坑提醒
+这个仓库的 `.mjs` 是 **CRLF** 换行。多行字符串做替换会静默匹配不上（`\n` vs `\r\n`），而 `node --check` 只查语法不查替换是否生效 —— 替换后一定跟一句 grep 确认。
+
+### 教训（写进记忆）
+**「我没找到」不等于「它没有」。** 今天两次都栽在这句话上（doubao 说没入口、trae 说打不开）。以后写「不可用」之前，必须先能说出「试了哪几种方式、每种失败现象分别是什么」。
