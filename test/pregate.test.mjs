@@ -136,3 +136,18 @@ test('逐字抄对的行必须放行（新规则不许误杀）', () => {
   const r = refMatchCheck({ id: 'c', answer: 'x', evidence: 'a.mjs:1 —— export const MAX_PARTS = 6;' }, { cwd: tmp });
   assert.equal(r.verdict, PRE.defer);
 });
+test('引文里夹着行号（a.mjs:40 … :43）不许当抄写数字判死（2026-11-17 真语料 exact-30 的假阳性）', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pre-'));
+  fs.writeFileSync(path.join(tmp, 'a.mjs'), 'export const isCodeTask = (p) => CODE_HINTS.test(String(p));\n');
+  // 40 / 43 是「文件名:行号」里的行号，不是代码里的数字；拿它们去和第 1 行比必然对不上。
+  const r = refMatchCheck({ id: 'c', answer: 'x', evidence: 'a.mjs:1 —— 读作 export const isCodeTask = (p) => …；:40 读作 export function beta；:43 读作 export function gamma；实际第 1 行是 export const isCodeTask = (p) => CODE_HINTS.test(String(p));' }, { cwd: tmp });
+  assert.equal(r.verdict, PRE.defer);
+});
+
+test('引用写行范围（a.mjs:1-3）时要按整段核，范围内命中就算对（原先只看起始行会误杀）', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pre-'));
+  fs.writeFileSync(path.join(tmp, 'a.mjs'), ['// header', 'export function alpha() { return 1 }', 'export function beta() { return 2 }'].join('\n') + '\n');
+  const r = refMatchCheck({ id: 'c', answer: 'x', evidence: 'a.mjs:1-3 —— export function beta() { return 2 }' }, { cwd: tmp });
+  assert.equal(r.verdict, PRE.defer);
+});
+

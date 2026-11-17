@@ -1,0 +1,245 @@
+{
+ "contract": "atwo-blind-manifest/3",
+ "note": "全真实语料盲测集：175 份历史产物里可客观判定标签的 34 份（exact 10 / bad 16 / empty 8）。sloppy 89 份不进分母 —— 其中 87 份没有快照，无法区分「产物真引错行」与「我提交代码导致行号漂移」，那一档必须单列而不是混进缺陷分母。unknown 52 份只报不计分（取不出可核指纹）。",
+ "generatedAt": "2026-11-17T13:19:06.330Z",
+ "cases": [
+  {
+   "id": "empty-1",
+   "file": ".atw/fanout/20261116-131633/child-1.md",
+   "label": "bad",
+   "why": "EVIDENCE 为空",
+   "objective": "empty"
+  },
+  {
+   "id": "exact-2",
+   "file": ".atw/fanout/20261116-135851/child-2.md",
+   "label": "good",
+   "why": "引用逐行对得上（6 处可核）",
+   "objective": "exact"
+  },
+  {
+   "id": "bad-3",
+   "file": ".atw/fanout/20261116-150327/child-4.md",
+   "label": "bad",
+   "why": "引用连历史里都找不到（编造或引错文件）：atwo.mjs:194 atwo.mjs:194",
+   "objective": "bad"
+  },
+  {
+   "id": "bad-4",
+   "file": ".atw/fanout/20261116-151321/child-1.md",
+   "label": "bad",
+   "why": "引用连历史里都找不到（编造或引错文件）：lib/cli-spec.mjs:18 atwo.mjs:464 atwo.mjs:906",
+   "objective": "bad"
+  },
+  {
+   "id": "bad-5",
+   "file": ".atw/fanout/20261116-151835/child-4.md",
+   "label": "bad",
+   "why": "引用连历史里都找不到（编造或引错文件）：atwo.mjs:63",
+   "objective": "bad"
+  },
+  {
+   "id": "exact-6",
+   "file": ".atw/fanout/20261116-153554/child-5.md",
+   "label": "good",
+   "why": "引用逐行对得上（3 处可核）",
+   "objective": "exact"
+  },
+  {
+   "id": "exact-7",
+   "file": ".atw/fanout/20261116-154025/child-5.md",
+   "label": "good",
+   "why": "引用逐行对得上（4 处可核）",
+   "objective": "exact"
+  },
+  {
+   "id": "exact-8",
+   "file": ".atw/fanout/20261116-154203/child-3.md",
+   "label": "good",
+   "why": "引用逐行对得上（2 处可核）",
+   "objective": "exact"
+  },
+  {
+   "id": "exact-9",
+   "file": ".atw/fanout/20261116-154203/child-5.md",
+   "label": "good",
+   "why": "引用逐行对得上（2 处可核）",
+   "objective": "exact"
+  },
+  {
+   "id": "exact-10",
+   "file": ".atw/fanout/20261116-154619/child-4.md",
+   "label": "good",
+   "why": "引用逐行对得上（2 处可核）",
+   "objective": "exact"
+  },
+  {
+   "id": "bad-11",
+   "file": ".atw/fanout/20261116-154619/child-5.md",
+   "label": "bad",
+   "why": "引用连历史里都找不到（编造或引错文件）：contract.mjs:11 fanout-run.mjs:12",
+   "objective": "bad"
+  },
+  {
+   "id": "exact-12",
+   "file": ".atw/fanout/20261117-010426/child-2.md",
+   "label": "good",
+   "why": "引用逐行对得上（2 处可核）",
+   "objective": "exact"
+  },
+  {
+   "id": "empty-13",
+   "file": ".atw/fanout/20261117-011145/child-1.md",
+   "label": "bad",
+   "why": "EVIDENCE 为空",
+   "objective": "empty"
+  },
+  {
+   "id": "empty-14",
+   "file": ".atw/fanout/20261117-011145/child-2.md",
+   "label": "bad",
+   "why": "EVIDENCE 为空",
+   "objective": "empty"
+  },
+  {
+   "id": "empty-15",
+   "file": ".atw/fanout/20261117-011145/child-3.md",
+   "label": "bad",
+   "why": "EVIDENCE 为空",
+   "objective": "empty"
+  },
+  {
+   "id": "empty-16",
+   "file": ".atw/fanout/20261117-012256/child-3.md",
+   "label": "bad",
+   "why": "EVIDENCE 为空",
+   "objective": "empty"
+  },
+  {
+   "id": "empty-17",
+   "file": ".atw/fanout/20261117-014056/child-2.md",
+   "label": "bad",
+   "why": "EVIDENCE 为空",
+   "objective": "empty"
+  },
+  {
+   "id": "empty-18",
+   "file": ".atw/fanout/20261117-014056/child-3.md",
+   "label": "bad",
+   "why": "EVIDENCE 为空",
+   "objective": "empty"
+  },
+  {
+   "id": "empty-19",
+   "file": ".atw/fanout/20261117-020035/child-1.md",
+   "label": "bad",
+   "why": "EVIDENCE 为空",
+   "objective": "empty"
+  },
+  {
+   "id": "bad-20",
+   "file": ".atw/fanout/20261117-092845/child-1.md",
+   "label": "bad",
+   "why": "引用连历史里都找不到（编造或引错文件）：lib/sandbox.mjs:1",
+   "objective": "bad"
+  },
+  {
+   "id": "bad-21",
+   "file": ".atw/fanout/20261117-093023/child-1.md",
+   "label": "bad",
+   "why": "引用连历史里都找不到（编造或引错文件）：lib/sandbox.mjs:19 lib/sandbox.mjs:19",
+   "objective": "bad"
+  },
+  {
+   "id": "bad-22",
+   "file": ".atw/fanout/20261117-105117/child-1.md",
+   "label": "bad",
+   "why": "引用连历史里都找不到（编造或引错文件）：lib/worktree.mjs:87 lib/worktree.mjs:89 lib/worktree.mjs:124",
+   "objective": "bad"
+  },
+  {
+   "id": "bad-23",
+   "file": ".atw/fanout/20261117-105117/child-2.md",
+   "label": "bad",
+   "why": "引用连历史里都找不到（编造或引错文件）：lib/worktree.mjs:9 lib/worktree.mjs:49 lib/worktree.mjs:104",
+   "objective": "bad"
+  },
+  {
+   "id": "bad-24",
+   "file": ".atw/fanout/20261117-105852/child-1.md",
+   "label": "bad",
+   "why": "引用连历史里都找不到（编造或引错文件）：lib/queue.mjs:59 lib/queue.mjs:166 lib/supervisor.mjs:17",
+   "objective": "bad"
+  },
+  {
+   "id": "bad-25",
+   "file": ".atw/fanout/20261117-105852/child-2.md",
+   "label": "bad",
+   "why": "引用连历史里都找不到（编造或引错文件）：lib/queue.mjs:54 lib/queue.mjs:137 lib/queue.mjs:264",
+   "objective": "bad"
+  },
+  {
+   "id": "bad-26",
+   "file": ".atw/fanout/20261117-105852/child-3.md",
+   "label": "bad",
+   "why": "引用连历史里都找不到（编造或引错文件）：lib/queue.mjs:12 lib/queue.mjs:154 lib/queue.mjs:243",
+   "objective": "bad"
+  },
+  {
+   "id": "bad-27",
+   "file": ".atw/fanout/20261117-111010/child-1.md",
+   "label": "bad",
+   "why": "引用连历史里都找不到（编造或引错文件）：lib/pool.mjs:84 lib/pool.mjs:148 lib/pool.mjs:169",
+   "objective": "bad"
+  },
+  {
+   "id": "bad-28",
+   "file": ".atw/fanout/20261117-111010/child-2.md",
+   "label": "bad",
+   "why": "引用连历史里都找不到（编造或引错文件）：lib/pool.mjs:7 lib/pool.mjs:30 lib/pool.mjs:67",
+   "objective": "bad"
+  },
+  {
+   "id": "bad-29",
+   "file": ".atw/fanout/20261117-111636/child-1.md",
+   "label": "bad",
+   "why": "引用连历史里都找不到（编造或引错文件）：lib/cost.mjs:6 lib/cost.mjs:45 lib/cost.mjs:109",
+   "objective": "bad"
+  },
+  {
+   "id": "exact-30",
+   "file": ".atw/fanout/20261117-111636/child-2.md",
+   "label": "good",
+   "why": "引用逐行对得上（8 处可核）",
+   "objective": "exact"
+  },
+  {
+   "id": "bad-31",
+   "file": ".atw/fanout/20261117-170845/child-1.md",
+   "label": "bad",
+   "why": "引用连历史里都找不到（编造或引错文件）：package.json:51 package.json:16 package.json:51",
+   "objective": "bad"
+  },
+  {
+   "id": "bad-32",
+   "file": ".atw/fanout/20261117-170845/child-2.md",
+   "label": "bad",
+   "why": "引用连历史里都找不到（编造或引错文件）：package.json:52 package.json:53 package.json:16",
+   "objective": "bad"
+  },
+  {
+   "id": "exact-33",
+   "file": ".atw/fanout/wbtest/child-1.md",
+   "label": "good",
+   "why": "引用逐行对得上（2 处可核）",
+   "objective": "exact"
+  },
+  {
+   "id": "exact-34",
+   "file": ".atw/fanout/wbtest/child-2.md",
+   "label": "good",
+   "why": "引用逐行对得上（2 处可核）",
+   "objective": "exact"
+  }
+ ]
+}
