@@ -134,6 +134,17 @@ await test('KINDS 就是那两个，别悄悄扩（新 kind 必须有 handler �
   assert.deepEqual(KINDS, ['patch', 'gate']);
 });
 
-console.log('');
-console.log(pass + ' passed, ' + fail + ' failed');
+await test('gate 任务不需要 task 文本（它只要求跑闸门）；patch 没写才该判 empty-task', () => {
+  const d = sandbox();
+  drop(d, 'g', { kind: 'gate', skipTests: true });
+  drop(d, 'p', { kind: 'patch' });
+  const r = listInbox(d);
+  const g = r.entries.find((e) => e.id === 'g');
+  const p = r.entries.find((e) => e.id === 'p');
+  assert.equal(g.ok, true, 'gate 空 task 必须放行：' + g.reason);
+  assert.ok(/empty-task/.test(String(p.reason)), 'patch 空 task 仍要拦');
+  fs.rmSync(d, { recursive: true, force: true });
+});
+
+console.log('');console.log(pass + ' passed, ' + fail + ' failed');
 if (fail > 0) process.exit(1);

@@ -115,7 +115,9 @@ await test('验收命令绿 → 出 patch', async () => {
 
 await test('副本用完即销毁（本次测试没有留下新副本）', async () => {
   const after = listWorktrees(HERE).entries.map((e) => e.path);
-  const leaks = after.filter((p) => !WT_BEFORE.has(p) && /atwo-wt-/.test(p));
+  // 只认本进程建的副本：worktree 名是 atwo-wt-<pid>-<seq>-<hash>。
+  // 按「全仓库没有新副本」判会在并发跑测试时必红（另一个测试也在建），那是假红。
+  const leaks = after.filter((p) => !WT_BEFORE.has(p) && p.includes('atwo-wt-' + process.pid + '-'));
   assert.deepEqual(leaks, [], '残留副本：' + leaks.join(','));
 });
 
@@ -137,8 +139,7 @@ await test('changedFiles / diffOf / syntaxCheck / runTests 各自对得上', asy
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
-await test('formatPatchResult 只印结论与红行，不印整份 diff', () => {
-  const txt = formatPatchResult({
+await test('formatPatchResult 只印结论与红行，不印整份 diff', () => {  const txt = formatPatchResult({
     contract: PATCH_CONTRACT, ok: true, allOk: true, stamp: 'x', patchPaths: ['/tmp/a.patch'],
     elapsedMs: 1234,
     parts: [{ index: 1, ok: true, changed: [{ path: 'lib/a.mjs' }], diffStat: ' lib/a.mjs | 2 +-', tests: { cmd: 'node test/a.test.mjs', code: 0, ok: true }, patchPath: '/tmp/a.patch' }],
