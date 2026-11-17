@@ -22,7 +22,7 @@
  *
  * 二、三条坑
  * 坑一「怎么判定真答完」：不能只看非空。必须 parseContract 成功且
- *   validateSyntax 通过、拿到结构化 data，才算真答完。
+ *   checkSyntax(...).ok 为真、拿到结构化 data，才算真答完。
  * 坑二「空回答 vs 思考中文案」：'正在思考' / '让我看一下' 这类中文过渡文案
  *   非空却不是答案。若失败返回空串，二者会被调用方混为一谈；
  *   因此失败一律 throw，由异常区分「没答」与「答错了」。
@@ -41,9 +41,9 @@
  */
 import { appendFile } from 'node:fs/promises';
 import { withLockPool } from '../lib/lock.mjs';
-import { checkBudget, charge } from '../lib/budget.mjs';
+import { check, record } from '../lib/budget.mjs';
 import { parseContract } from '../lib/contract.mjs';
-import { validateSyntax } from '../lib/syntax.mjs';
+import { checkSyntax } from '../lib/syntax.mjs';
 
 const AGENT = 'demo';
 const SLOTS = 1; // 保守并发额度，见「坑三」
@@ -99,7 +99,7 @@ function judgeFinished(raw) {
   if (!contract.ok) {
     return { ok: false, data: {}, reason: contract.reason };
   }
-  if (!validateSyntax(contract.data)) {
+  if (!checkSyntax(contract.data).ok) {
     return { ok: false, data: {}, reason: '语法校验未通过' };
   }
   return { ok: true, data: contract.data, reason: '' };
@@ -138,14 +138,15 @@ export async function askDemo(prompt, opts = {}) {
   const promptSummary = prompt.slice(0, 80);
   let raw = '';
   try {
-    await checkBudget(inputTokens);
+    const budget = check(AGENT, inputTokens);
+    if (!budget.ok) throw new Error(budget.reason);
     raw = await callModel(prompt, opts);
     const judged = judgeFinished(raw);
     if (!judged.ok) {
       throw new Error('未真答完：' + judged.reason);
     }
     const outputTokens = estimateTokens(raw);
-    await charge(inputTokens, outputTokens);
+    record(AGENT, { input: inputTokens, output: outputTokens, ok: true });
     const result = {
       answer: judged.data,
       code: 0,

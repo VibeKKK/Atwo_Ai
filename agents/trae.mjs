@@ -2,6 +2,8 @@
 // 原理：Trae 是 Electron，用 --remote-debugging-port 开 CDP，直接操作 DOM。
 // 由 Trae 自己评审过一轮（reviews/trae-review-trae.mjs.md），下面按它的意见修了 1/2/3/4/5/9 条。
 import { attach } from '../lib/cdp.mjs';
+import { nextModelFor } from '../lib/models.mjs';
+import { watchUsage } from '../lib/traectl.mjs';
 import { spawn } from 'node:child_process';
 import net from 'node:net';
 import fs from 'node:fs';
@@ -53,6 +55,23 @@ export async function ensureTrae({ port = PORT, exe = TRAE_EXE, waitMs = 90000 }
     if (await portOpen(port)) return { started: true, port, waitedMs: Date.now() - t0, pid: child.pid };
   }
   throw new Error(`Trae 拉起失败：${waitMs}ms 内 ${port} 未监听（exe=${exe}）。手动开一次 Trae 再试。`);
+}
+
+/**
+ * 卡死自愈：杀掉全部 Trae 进程再重新拉起。
+ *
+ * 2026-11-15 实测的症状与判据：主进程活着（端口通、输入框能打字、发送按钮能点、
+ * 输入框会被清空），但对话区永远不出现新回合。日志侧的决定性证据是
+ * `ai_agent-0-*.alaudalog` 在 16:29 停止写入，而 `Trae AI Code Client.log`
+ * 仍在每 4 分钟输出一次 getDynamicConfig success —— 主进程健康、AI agent 子进程已死。
+ * `ensureTrae()` 只看端口，遇到这种状态会直接返回「已在跑」，所以必须有这一层。
+ */
+export async function restartTrae({ port = PORT, exe = TRAE_EXE, waitMs = 90000 } = {}) {
+  try {
+    spawn('taskkill', ['/F', '/IM', 'Trae CN.exe'], { windowsHide: true, stdio: 'ignore' });
+  } catch { /* kill 失败也让后面 spawn 试一次 */ }
+  await sleep(5000);
+  return ensureTrae({ port, exe, waitMs });
 }
 
 /** 文档里可能有多个 contenteditable（搜索框、重命名框…），取尺寸最大的那个当输入框 */
@@ -160,7 +179,7 @@ async function waitForTarget(port, titlePart, timeoutMs = 90000) {
   let last = [];
   while (Date.now() - t0 < timeoutMs) {
     try {
-      const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+      const list = await (await fetch(`http://localhost:${port}/json/list`)).json();
       last = list;
       const hit = list.find(t => t.type === 'page' && (t.title || '').includes(titlePart));
       if (hit) return hit;
@@ -537,9 +556,16 @@ export async function askTrae(prompt, opts = {}) {
   }
   // 端口开了不等于窗口建好了，等 Agent 面板目标出现再连
   await waitForTarget(opts.port ?? PORT, 'Agent', opts.bootTimeoutMs ?? 90000);
-  const c = await attach(opts.port ?? PORT, 'Agent');
+  let c = await attach(opts.port ?? PORT, 'Agent');   // 二级自愈重启客户端后会重连，所以不能是 const
   try {
     if (!await inputSelectorReady(c)) throw new Error('Trae Agent 面板没就绪');
+
+    // 用量闭环（2026-11-15 加）：只挂监听不阻塞，这一轮结束再取。
+    // 为什么走 CDP Network 而不是页面 hook：commercial/get_session_usage 是 Trae 内嵌模块发的，
+    // 不经 window.fetch，注入 hook 里记录数永远是 0（实测过：hook 装好、对话正常、reqs 仍为 0）。
+    // 拿不到就是 null，不影响派活本身。
+    const usageP = watchUsage(c, { waitMs: 25000 }).catch(() => null);
+    await sleep(400);   // 给 Network.enable 一点时间，否则首条请求可能漏掉
 
     // 开新对话：默认「按需触发」（2026-11-15 A3 改）。
     // 背景：Trae 的会话区是虚拟列表，DOM 只保留最近约 5–13 条回合；到上限后
@@ -666,7 +692,37 @@ export async function askTrae(prompt, opts = {}) {
     //     回合数到 5 就不再涨（实测卡在 turns=5(base 5)），此时回答其实已经到了。
     const DEBUG = process.env.ORCH_DEBUG_TRAE === '1';
     const HARD_TIMEOUT = timeoutMs;
-    let recovered = false;   // 本轮是否已经用过「开新对话重发」的恢复
+    let recovered = 0;   // 已用过的自愈级数：0 未用 / 1 开新对话 / 2 重启客户端
+    const triedModels = new Set();   // 恢复0 换模型时，已经试过的模型名
+    // 判「这段文字只是我发出去的提示词」，不是「太短所以可疑」。
+    // 2026-11-15 修（第二处）：原实现 `if (t.length < 20) return true` —— 把长度当可疑度，
+    // 于是「只回复两个字：收到」的正确答案（「收到」2 字符）永远被判成回显，循环白转。
+    // 短回答是合法的，不能按长度否掉；真正要排除的是「和 prompt 重合」。
+    // 同时把定义挪到循环之前：原来它写在 905 行，而 766 行的收工判据已经引用它，
+    // node --check 查不出来，实际运行是 ReferenceError。
+    const pNorm = String(prompt).replace(/\s+/g, '');
+    const looksEcho = (s) => {
+      const t = String(s || '').replace(/\s+/g, '');
+      if (!t) return true;
+      if (t === pNorm) return true;
+      if (pNorm.length > 8 && pNorm.startsWith(t.slice(0, Math.min(30, t.length)))) return true;
+      return false;
+    };
+
+    // 2026-11-16 新增：纯界面词不是答案。
+    // 实测症状：问「你是哪个大模型」，10.9 秒就「收工」，addedText 是「思考中」三个字 ——
+    // Trae 流式渲染会先吐一个「思考中」占位，结构信号那时恰好回 idle，于是被当成答案。
+    // 这类词一共有三种来源：思考占位、生成占位、以及只剩渲染骨架时的 TRAE/由AI生成/百分比。
+    const looksChrome = (s) => {
+      const t = String(s || '').replace(/\s+/g, '');
+      if (!t) return true;
+      return /^(?:思考中|正在思考|思考过程|生成中|正在生成|正在回答|TRAE|由AI生成|\d+%)+$/.test(t);
+    };
+    if (looksChrome('思考中') !== true || looksChrome('豆包') !== false) {
+      // 自检：这段正则如果写歪了，收工会立刻失效或永远收不了工。宁可当场炸，也别静默错。
+      throw new Error('looksChrome 自检失败');
+    }
+
     let lastText = '', stableSince = Date.now(), sawBusy = false, finished = false;
     // 2026-11-14 新增：结构信号判定收工时，当场把容器文本抓下来存这里。
     // 为什么必须在循环里抓：Trae 的会话列表是虚拟化的，收工后再读一次，turns 可能从 10 掉到 2
@@ -678,8 +734,11 @@ export async function askTrae(prompt, opts = {}) {
       const ans = await readAnswers(c);
     // 选「本次新产生」的那条回合：指纹不在 baseFps 里，且文本不像 prompt 本身
     try {
+      // 同 781 行那处的理由：> 20 会把「收到」这类短回答挡在外面，让 capturedText 永远是空。
       const fresh = ((ans && ans.list) || []).slice().reverse()
-        .find((x) => !baseFps.has(x.fp) && String(x.text || '').replace(/\s/g, '').length > 20);
+        .find((x) => !baseFps.has(x.fp)
+          && String(x.text || '').replace(/\s/g, '').length > 0
+          && !looksEcho(x.text));
       if (fresh) { capturedText = fresh.text; source0 = 'fresh-turn'; }
     } catch { }
       const busy = await isBusy(c);
@@ -717,18 +776,58 @@ export async function askTrae(prompt, opts = {}) {
         // 给流式渲染留一拍，避免读到半截
         await sleep(Math.min(settleMs, 800));
         const ans2 = await readAnswers(c);
-        const len2 = (ans2.text || '').length;
-        if (len2 > String(prompt).length + 5) {
+        // 2026-11-15 修（回合隔离，329ms 串台）：收工必须拿到「本轮新产生」的那条回合。
+        // 旧写法直接取 ans2.text（= DOM 里最后一条 turn 的文本），而 Trae 是虚拟化列表，
+        // 生成还没真正开始时最后一条仍是上一题的答案 → busy 一闪、genSt 一空，就 0.3 秒收工交旧答案。
+        // 现在：优先用指纹不在 baseFps 里的那条；连它都拿不到、而候选指纹又与基线重合时，
+        // 说明看到的还是旧回合，拒绝收工，继续等。
+        const fpOfText = (t) => String(t || '').slice(0, 40) + '|' + String(t || '').slice(-40) + '|' + String(t || '').length;
+        // 2026-11-15 修（第三处 > 20）：这里原本也要求「新回合去空白后 > 20 字符」，
+        // 于是「收到」（2 字符）这种正确答案永远找不到 freshNow → isFresh 永为 false →
+        // 收工分支进不去 → 一路等到 timeoutMs（实测 120029ms、addedText 明明就是「收到」）。
+        // 真正要排除的是「我自己发出去的 prompt」，用 looksEcho 判，不按长度判。
+        // 2026-11-15 修（第四处，这才是真根因）：原来只靠「文本指纹不在基线里」判新回合。
+        // 碰上同样的回答重复出现（连续派两次「回复收到」、或要求 AI 回「完成」「OK」）时，
+        // 指纹必然重合 → 判「这一条是旧的」→ 拒绝收工 → 一路等到 timeoutMs。
+        // 实测 DEBUG 日志一直打：
+        //   [poll 26.2s] busy=false turns=11(base 9) len=2 changed=false pageGrew=true
+        //   [finish] 候选就是发送前那条（指纹重合），拒绝收工继续等
+        // turns 从 9 涨到 11 —— 明明有两轮新回合，却因为内容撞了就当作没发生。
+        //
+        // 回合数才是硬信号：turns 变多就一定有新回合，跟内容是否重复无关。
+        const grewTurns = Number((ans2 && ans2.turns) || 0) > Number((baseAns && baseAns.turns) || 0);
+        const cands = ((ans2 && ans2.list) || []).slice().reverse()
+          .filter((x) => String(x.text || '').replace(/\s/g, '').length > 0 && !looksEcho(x.text) && !looksChrome(x.text));
+        const freshNow = grewTurns ? cands[0] : cands.find((x) => !baseFps.has(x.fp));
+        const pick = freshNow ? freshNow.text : ans2.text;
+        if (!freshNow && !grewTurns && baseFps.has(fpOfText(pick))) {
+          if (DEBUG) console.error('[finish] 候选就是发送前那条（指纹重合），拒绝收工继续等');
+          continue;
+        }
+        const len2 = String(pick || '').length;
+        // 2026-11-15 修（短回答永远判超时）：原判据是「答案必须比提问长 5 个字符」，
+        // 碰上「只回复两个字：收到」这种指令永远不成立 —— Trae 明明答了「收到」，
+        // 循环却一直等到 timeoutMs 报 timedOut（实测 141031ms、addedText 是「收到」）。
+        // 真正要排除的只有两件事：prompt 回显、上一轮旧答案。
+        // 前者由 looksEcho 判，后者由 freshNow（指纹不在基线与里）判，
+        // 都不需要拿长度去猜 —— 长度比较留着只当「拿不到 fresh 回合」时的兜底。
+        const isFresh = !!freshNow;
+        if (looksChrome(pick)) {
+          if (DEBUG) console.error('[finish] 文本还只是界面占位（' + String(pick || '').slice(0, 12) + '），继续等');
+          await sleep(600);
+          continue;
+        }
+        if (len2 > 0 && (isFresh || len2 > String(prompt).length + 5) && !looksEcho(pick)) {
           // 2026-11-15 新增（A2）：Trae 流式渲染会短暂回 idle，若此时文本停在
           // `encoding='` 这种半截处就被判收工 → 下游 py_compile 报 unterminated string。
           // 宁可多等一轮，也不收半截。
-          if (looksTruncated(ans2.text)) {
+          if (looksTruncated(pick)) {
             if (DEBUG) console.error('[finish] 看起来是半截（引号/括号未闭合），继续等');
             await sleep(600);
             continue;
           }
-          if (DEBUG) console.error(`[finish] 结构信号 idle 且文本 ${len2} 字符 → 收工`);
-          capturedText = ans2.text;
+          if (DEBUG) console.error(`[finish] 结构信号 idle 且文本 ${len2} 字符（${freshNow ? 'fresh-turn' : 'container'}）→ 收工`);
+          capturedText = pick;
           finished = true;
           break;
         }
@@ -736,28 +835,90 @@ export async function askTrae(prompt, opts = {}) {
       // 快速失败：45 秒内既没新回合、文本也没变 —— 说明 Trae 没接这轮
       // （典型两种：会话已满到虚拟化上限、或答案与上一轮完全相同导致指纹不变）
       if (!active && Date.now() - t0 > 45000) {
-        // 自愈第一式：开新对话重发一次。会话到虚拟化上限或指纹撞车时这是唯一出路。
-        if (process.env.ORCH_TRAE_NO_RECOVER !== '1' && !recovered) {
-          recovered = true;
-          console.error('[恢复] 45 秒无新回合，自动开新对话重发一次');
-          try {
-            const nc2 = await clickNewTask({ port: opts.port ?? PORT });
-            if (!nc2.ok) console.error('[恢复] 开新对话失败：' + nc2.reason);
-            await sleep(900);
-            await focusEditor(c);
-            await clearInput(c);
-            const typed2 = await typeInto(c, prompt);
-            if (!String(typed2).includes(tailWant)) console.error('[恢复] 重发时写入不完整，仍继续尝试');
-            baseAns = await readAnswers(c);
-            await sleep(250);
-            await pressEnter(c);
-            t0 = Date.now();
-            continue;
-          } catch (e3) {
-            console.error('[恢复] 失败：' + e3.message);
+        // 两级自愈。原来的「开新对话」只治会话满，治不了 agent 子进程死亡：
+        // 2026-11-15 实测 agent 死后输入能打字、发送能清空、对话区永不出现新回合 —— 只有重启能救。
+        const maxRecover = Number(process.env.ORCH_TRAE_RECOVER_LEVEL || 2) || 2;
+        if (process.env.ORCH_TRAE_NO_RECOVER !== '1' && recovered < maxRecover) {
+          recovered += 1;
+          if (recovered === 1) {
+            // 恢复0（2026-11-16 实测）：模型静默失败时，输入能打字、发送能清空输入框，
+            // 但既不产生回合、也不发任何聊天请求（只有遥测）。换一个模型立刻恢复。
+            // 比「开新对话」便宜且不丢上下文，所以先试它，成功了就不用往下走恢复1/2。
+            let switched = null;
+            try {
+              let cur = null;
+              try { cur = await c.js(T_CUR); } catch { /* 读不到就当未知 */ }
+              const next = nextModelFor('trae', { current: cur, tried: [...triedModels] });
+              if (next) {
+                const sw = await setModel(next, { port: opts.port ?? PORT });
+                if (sw && sw.ok) {
+                  switched = next;
+                  triedModels.add(next);
+                  console.error('[恢复0] 换模型 ' + (cur || '(未知)') + ' → ' + next + '，重发同一问');
+                } else {
+                  console.error('[恢复0] 换模型失败：' + ((sw && sw.reason) || '未知'));
+                }
+              } else {
+                console.error('[恢复0] trae 的模型都试过了，交给恢复1');
+              }
+            } catch (e0) {
+              console.error('[恢复0] 换模型异常：' + String((e0 && e0.message) || e0).slice(0, 120));
+            }
+            if (switched) {
+              await sleep(300);
+              await focusEditor(c);
+              await clearInput(c);
+              const typed0 = await typeInto(c, prompt);
+              if (!String(typed0).includes(tailWant)) console.error('[恢复0] 重发时写入不完整，仍继续尝试');
+              baseAns = await readAnswers(c);
+              await sleep(250);
+              await pressEnter(c);
+              t0 = Date.now();
+              continue;
+            }
+            console.error('[恢复1] 45 秒无新回合，自动开新对话重发一次');
+            try {
+              const nc2 = await clickNewTask({ port: opts.port ?? PORT });
+              if (!nc2.ok) console.error('[恢复1] 开新对话失败：' + nc2.reason);
+              await sleep(900);
+              await focusEditor(c);
+              await clearInput(c);
+              const typed2 = await typeInto(c, prompt);
+              if (!String(typed2).includes(tailWant)) console.error('[恢复1] 重发时写入不完整，仍继续尝试');
+              baseAns = await readAnswers(c);
+              await sleep(250);
+              await pressEnter(c);
+              t0 = Date.now();
+              continue;
+            } catch (e3) {
+              console.error('[恢复1] 失败：' + e3.message);
+            }
+          } else {
+            console.error('[恢复2] 开新对话无效，重启 Trae 客户端（agent 子进程可能已死）');
+            try {
+              await restartTrae({ port: opts.port ?? PORT, waitMs: opts.bootTimeoutMs ?? 90000 });
+              try { c.close(); } catch { /* 旧 ws 随进程一起死了，忽略 */ }
+              c = await attach(opts.port ?? PORT, 'Agent');
+              if (!await inputSelectorReady(c)) throw new Error('重启后输入框仍没就绪');
+              const nc3 = await clickNewTask({ port: opts.port ?? PORT });
+              if (!nc3.ok) console.error('[恢复2] 开新对话失败：' + nc3.reason);
+              await sleep(900);
+              await focusEditor(c);
+              await clearInput(c);
+              const typed3 = await typeInto(c, prompt);
+              if (!String(typed3).includes(tailWant)) console.error('[恢复2] 重发时写入不完整，仍继续尝试');
+              baseAns = await readAnswers(c);
+              await sleep(250);
+              await pressEnter(c);
+              t0 = Date.now();
+              console.error('[恢复2] 已重启并重发，继续等待');
+              continue;
+            } catch (e4) {
+              console.error('[恢复2] 失败：' + e4.message);
+            }
           }
         }
-        const e2 = new Error('Trae 45 秒内没有产生新回合（会话已满或答案与上一轮完全相同，自动恢复也没救回来）。建议换问法；设 ORCH_TRAE_NO_RECOVER=1 可关闭自动恢复。');
+        const e2 = new Error('Trae 45 秒内没有产生新回合（会话已满 / 答案与上一轮相同 / agent 子进程已死，两级自愈都没救回来）。建议换问法；设 ORCH_TRAE_NO_RECOVER=1 关自愈，设 ORCH_TRAE_RECOVER_LEVEL=1 只保留开新对话。');
         e2.code = 'ESTALE';
         throw e2;
       }
@@ -770,6 +931,14 @@ export async function askTrae(prompt, opts = {}) {
           // 2026-11-15 新增（A2）：稳定 ≠ 写完。半截文本也会「稳定」，
           // 所以收工前再过一道 looksTruncated，命中就把稳定计时器重置、继续等。
           const cand = (ans && ans.text) ? ans.text : (ptText || '');
+          // 2026-11-15 修：空文本不是「半截」，是「还没开始」。原来空串会走进 looksTruncated
+          // 被判成半截 → 每 settleMs 重置一次稳定计时器 → 永远不收工也不报错，
+          // 日志一直刷「文本稳定但看起来是半截，重置计时继续等」（实测 turns=1 len=0 转 45 秒）。
+          if (!String(cand || '').trim()) {
+            if (DEBUG) console.error('[finish] 还没有任何文本，不算半截，继续等');
+            stableSince = Date.now();
+            continue;
+          }
           if (looksTruncated(cand)) {
             if (DEBUG) console.error('[finish] 文本稳定但看起来是半截，重置计时继续等');
             stableSince = Date.now();
@@ -791,8 +960,16 @@ export async function askTrae(prompt, opts = {}) {
     // 与循环里同一把尺：容器文本必须超过 prompt 长度才算「真有回答」，
     // 否则会抽出用户自己那条消息（extractReply 会把它剥掉 → 空串 → ok=false）。
     const promptLenNow = String(prompt).length;
-    const changedNow = !!ans.text && ans.text !== baseAns.text && ans.text.length > promptLenNow + 5;
-    const grewNow = ans.turns > baseAns.turns && !!ans.text && ans.text.length > promptLenNow + 5;
+    // 2026-11-16 修（决定性，同类判据的第 7 处）：这里原本要求「容器文本长度 > prompt 长度 + 5」。
+    // 短回答必然过不了：问「你是哪个大模型？只回答模型名称」22 字符，容器文本
+    // 「TRAE 思考过程 豆包 由 AI 生成 10%」约 20 字符 → 20 > 27 恒假 → activeNow=false
+    // → 走 text-diff 分支也拿不到 → added 为空，但 tokens 明明有 output 335。
+    // 正确判据只有一个：**回合数涨了就一定有新回合**（长度、内容都是猜的）。
+    // prompt 自己那条消息不会混进来 —— extractReply 已经把最后一个 TRAE 之前的内容剪掉了，
+    // 后面还有 looksEcho 终检兜底。
+    const txtNow = String(ans.text || '').trim();
+    const changedNow = !!txtNow && ans.text !== baseAns.text;
+    const grewNow = ans.turns > baseAns.turns && !!txtNow;
     const activeNow = changedNow || grewNow;
     let added, source;
     if (DEBUG && capturedText) {
@@ -829,13 +1006,6 @@ export async function askTrae(prompt, opts = {}) {
     // 其实是 prompt 自己，于是 rows 里出现「FAIL 但 text 是题目原文」；偶尔还会拿到上一题的答案。
     // 这里加一道终检：如果抽出来的内容基本就是 prompt 本身（或短得不像答案），继续等答案。
     {
-      const pNorm = String(prompt).replace(/\s+/g, '');
-      const looksEcho = (s) => {
-        const t = String(s || '').replace(/\s+/g, '');
-        if (!t) return true;
-        if (t.length < 20) return true;
-        return pNorm.startsWith(t.slice(0, 30)) || t === pNorm;
-      };
       for (let i = 0; i < 28 && looksEcho(added); i++) {
         await sleep(700);
         const a2 = await readAnswers(c);
@@ -848,6 +1018,7 @@ export async function askTrae(prompt, opts = {}) {
         added = cand2.length > added.length ? cand2 : added;
       }
     }
+    const usage = await usageP;
     const result = {
       ok: finished && added.length > 0,
       timedOut: !finished,
@@ -856,6 +1027,17 @@ export async function askTrae(prompt, opts = {}) {
       outputChars: added.length,
       elapsedMs: Date.now() - t0,
       sawBusy,
+      // 真实用量（花了多少 token / 命中多少缓存），拿不到就是 null —— 以前这里是空白，
+      // 导致 392 条流水 inputTokens/outputTokens 全 0，成本根本算不出来。
+      tokens: usage && usage.ok ? {
+        input: usage.inputTokens,
+        output: usage.outputTokens,
+        cacheRead: usage.cacheRead,
+        cacheWrite: usage.cacheWrite,
+        credits: usage.credits,
+        money: usage.money,
+        model: usage.model,
+      } : null,
     };
     if (!finished) {
       const err = new Error('等待超时（' + Math.round(timeoutMs / 1000) + 's），以下是已拿到的部分');
@@ -928,7 +1110,12 @@ const ANSWER_JS = `(() => {
   if (last) {
     const rs = last.querySelectorAll(REND);
     const r = rs[rs.length - 1];
-    if (r) text = ser(r).trim();
+    // 2026-11-16 修（决定性）：Trae CN 1.107 的助手回合里**没有 markdown-renderer 节点**
+    // （实测 rends:0 len:0，而 div.turn 的 innerText 明明有内容）。旧逻辑 r 为 null 就
+    // 把 text 留成空串 —— 表现为「tokens 有值（input 24491 / output 150）、界面看得到答案，
+    // 但 askTrae 返回 chars=0」。退化成整条 turn 的序列化文本，extractReply 会把
+    // 「TRAE 之前」和「由 AI 生成之后」剪掉，剩下的才是助手说的话。
+    text = r ? ser(r).trim() : ser(last).trim();
   }
   // 2026-11-14 补（治串题）：把最近 4 条回合各自的「指纹 + 文本」一起返回。
   // 指纹 = 该回合 renderer 文本的头 40 + 尾 40 + 长度，用它判断「哪一条是本次新产生的」，
@@ -938,7 +1125,8 @@ const ANSWER_JS = `(() => {
     const t = turns[i];
     const rs = t ? t.querySelectorAll(REND) : [];
     const r = rs && rs.length ? rs[rs.length - 1] : null;
-    const tx = r ? ser(r).trim() : '';
+    // 同上：没有 renderer 节点时退化成整条 turn（否则指纹全都是 '||0'，回合隔离失效）
+    const tx = r ? ser(r).trim() : (t ? ser(t).trim() : '');
     const head = tx.slice(0, 40), tail = tx.slice(-40);
     list.push({ i, fp: head + '|' + tail + '|' + tx.length, text: tx });
   }
@@ -1123,3 +1311,165 @@ export const meta = {
   codeHint: '要它出代码时，prompt 里必须写「用 markdown 代码块（```python）输出」，否则缩进会丢；拿到结果后用 extractCode() 取块。',
   costModel: '积分（Trae 账号内扣减，本地只能读到界面显示）',
 };
+
+// ── 换模型（2026-11-16 用户点破 + 实测打通）──────────────────────────────────
+// 关键：Trae 默认开着「Auto」（自动挑模型），此时列表里**只有 Auto 一行**，
+// 看起来像「这个账号不给换模型」。关掉那个 switch，17 个模型就全出来了。
+// 用户原话：「你把Auto关了，模型就出来了」。
+//
+// DOM 结构（实测）：
+//   button.core-model-select-trigger              ← 输入框右下角「Auto」按钮
+//   [role="listbox"]#radix-:r1d:                  ← popover 内容
+//     input[role="switch"].input-vTq7uM           ← Auto 开关（aria-checked="true" 时为开）
+//     div.core-auto-mode-switch-*                 ← 开关那一行的文字
+//     …然后才是 17 个模型行（各带倍率）
+//
+// 三个必须踩对的点：
+//   1. 先 Page.bringToFront —— 窗口在后台时 popover 不渲染，查什么都是空。
+//   2. 开关本体是那个 input[role="switch"]，点它外面那圈 div 或文字都没用。
+//   3. 菜单可能在点 trigger 时 toggle 掉，所以要先看 aria-expanded 再决定点不点。
+
+const TRAE_MODELS = [
+  { name: 'Seed-Code', cost: '0.06x' },
+  { name: 'MiMo-V2.6-Flash', cost: '0.06x' },
+  { name: 'DeepSeek-V4.1-Flash', cost: '0.06x' },
+  { name: 'GLM-5.3-Flash', cost: '0.08x' },
+  { name: 'Qwen3.8-Flash', cost: '0.08x' },
+  { name: 'MiniMax-M3.1-Flash', cost: '0.09x' },
+  { name: 'MiMo-V2.6-Pro', cost: '0.15x' },
+  { name: 'Seed-2.1-Turbo', cost: '0.20x' },
+  { name: 'MiniMax-M3', cost: '0.26x' },
+  { name: 'GLM-5.3-FlashX', cost: '0.31x' },
+  { name: 'DeepSeek-V4-Pro', cost: '0.36x' },
+  { name: 'Step-5-Preview', cost: '0.48x' },
+  { name: 'GLM-5.3', cost: '0.78x' },
+  { name: 'Seed-2.1-Pro-0915', cost: '0.80x' },
+  { name: 'Seed-Evolving', cost: '0.80x' },
+  { name: 'Qwen3.8-Max', cost: '1.50x' },
+  { name: 'Kimi-K3', cost: '1.83x' },
+];
+
+const T_OPEN = `(() => {
+  const b = document.querySelector('button.core-model-select-trigger');
+  if (!b) return { ok: false, why: '找不到模型按钮' };
+  if (b.getAttribute('aria-expanded') === 'true') return { ok: true, already: true };
+  const r = b.getBoundingClientRect();
+  const o = { bubbles: true, cancelable: true, clientX: Math.round(r.x + r.width / 2), clientY: Math.round(r.y + r.height / 2) };
+  for (const t of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) { try { b.dispatchEvent(new MouseEvent(t, o)); } catch {} }
+  return { ok: true, already: false };
+})()`;
+
+// 关掉 Auto 开关。返回 { ok, wasOn } —— wasOn 用来判断「列表里是不是只有 Auto 一行」。
+const T_AUTO_OFF = `(() => {
+  const sw = document.querySelector('[role="switch"]');
+  if (!sw) return { ok: false, why: '菜单里没有 Auto 开关（可能列表已经展开）' };
+  const wasOn = sw.getAttribute('aria-checked') === 'true';
+  if (wasOn) sw.click();
+  return { ok: true, wasOn };
+})()`;
+
+const T_LIST = `(() => {
+  const lb = document.querySelector('[role="listbox"]');
+  if (!lb) return [];
+  return [...lb.querySelectorAll('*')].filter((e) => !e.children.length).map((e) => (e.textContent || '').trim()).filter((t) => t && t.length < 40);
+})()`;
+
+// Radix Select 的行不是「点一下就好」：它在 pointerdown 上做选择，
+// 合成的 MouseEvent 它不认（实测点了之后按钮文本不变）。所以这里只负责算坐标，
+// 真正的点击交给 CDP 的 Input.dispatchMouseEvent —— 那是真事件.
+const T_PICK_RECT = (name) => `(() => {
+  const want = ${JSON.stringify(name)};
+  const lb = document.querySelector('[role="listbox"]');
+  if (!lb) return { ok: false, why: '菜单没开' };
+  const opt = [...lb.querySelectorAll('[role="option"]')].find((o) => {
+    const n = o.querySelector('.core-model-select-model-item-name');
+    return n && (n.textContent || '').trim() === want;
+  });
+  if (!opt) return { ok: false, why: '菜单里没有「' + want + '」' };
+  const r = opt.getBoundingClientRect();
+  return { ok: true, x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+})()`;
+
+const T_CUR = `(() => {
+  const b = document.querySelector('button.core-model-select-trigger');
+  return b ? b.textContent.trim().replace(/\\s+/g, ' ') : null;
+})()`;
+
+const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** 读出 trae 可选的模型（会自动关掉 Auto 开关再抓）。永不抛异常。 */
+export async function listModels(opts = {}) {
+  let c;
+  try { c = await attach(opts.port ?? PORT, 'Agent'); } catch (e) {
+    return { ok: false, models: [], reason: '连不上 Trae：' + String((e && e.message) || e).slice(0, 80) };
+  }
+  try {
+    try { await c.call('Page.bringToFront'); } catch {}
+    await sleepMs(400);
+    const o = await c.js(T_OPEN);
+    if (!o || !o.ok) return { ok: false, models: [], reason: (o && o.why) || '点不开菜单' };
+    await sleepMs(400);
+    await c.js(T_AUTO_OFF);
+    await sleepMs(600);
+    const list = await c.js(T_LIST);
+    // 过滤：只留真的模型名。要排掉说明句「Trae 基于效果与速度帮助您选择最优模型」
+    // （它也是字母开头），以及分区标题「内置模型」和操作项「添加模型」。
+    const models = (list || []).filter((x) => /^[A-Za-z]/.test(x)
+      && !x.startsWith('Auto') && !x.startsWith('Trae ')
+      && x !== '添加模型' && x !== '内置模型' && x.length < 34);
+    try { await c.call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }); } catch {}
+    return { ok: true, models, table: TRAE_MODELS };
+  } catch (e) {
+    return { ok: false, models: [], reason: String((e && e.message) || e).slice(0, 120) };
+  } finally {
+    try { c.close(); } catch {}
+  }
+}
+
+/**
+ * 换 trae 的模型。永不抛异常 —— 换模型是优化，不是前置条件。
+ * 第一次调用会顺手把「Auto」开关关掉（不关的话列表里永远只有 Auto 一行）。
+ * @returns {Promise<{ok:boolean, from:string|null, to:string|null, reason?:string}>}
+ */
+export async function setModel(name, opts = {}) {
+  const want = String(name == null ? '' : name).trim();
+  if (!want) return { ok: false, from: null, to: null, reason: '没给模型名' };
+  let c;
+  try { c = await attach(opts.port ?? PORT, 'Agent'); } catch (e) {
+    return { ok: false, from: null, to: null, reason: '连不上 Trae：' + String((e && e.message) || e).slice(0, 80) };
+  }
+  try {
+    try { await c.call('Page.bringToFront'); } catch {}
+    await sleepMs(400);
+
+    const from = await c.js(T_CUR);
+    if (from && from.includes(want)) return { ok: true, from, to: from, reason: '本来就是它' };
+
+    const o = await c.js(T_OPEN);
+    if (!o || !o.ok) return { ok: false, from, to: null, reason: (o && o.why) || '点不开菜单' };
+    await sleepMs(450);
+
+    await c.js(T_AUTO_OFF);
+    await sleepMs(700);
+
+    const pick = await c.js(T_PICK_RECT(want));
+    if (!pick || !pick.ok) {
+      try { await c.call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }); } catch {}
+      return { ok: false, from, to: null, reason: (pick && pick.why) || '菜单里没找到' };
+    }
+    await c.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: pick.x, y: pick.y, button: 'none', buttons: 0 });
+    await sleepMs(80);
+    await c.call('Input.dispatchMouseEvent', { type: 'mousePressed', x: pick.x, y: pick.y, button: 'left', clickCount: 1, buttons: 1 });
+    await sleepMs(60);
+    await c.call('Input.dispatchMouseEvent', { type: 'mouseReleased', x: pick.x, y: pick.y, button: 'left', clickCount: 1, buttons: 1 });
+    await sleepMs(800);
+
+    const to = await c.js(T_CUR);
+    if (to && to.includes(want)) return { ok: true, from, to };
+    return { ok: false, from, to, reason: '点了但按钮没变：' + String(to) };
+  } catch (e) {
+    return { ok: false, from: null, to: null, reason: String((e && e.message) || e).slice(0, 120) };
+  } finally {
+    try { c.close(); } catch {}
+  }
+}

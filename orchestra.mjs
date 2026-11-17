@@ -17,7 +17,7 @@ import path from 'node:path';
 import net from 'node:net';
 import { execSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { askTrae, askTraeFile, peekTrae, meta as traeMeta } from './agents/trae.mjs';
+import { askTrae, askTraeFile, peekTrae, snapshotTrae, meta as traeMeta } from './agents/trae.mjs';
 import { askCodeBuddy, peekCodeBuddy, meta as cbMeta } from './agents/codebuddy.mjs';
 import { ask as askWorkBuddy, askFile as askWbFile, doctor as wbDoctor, META as wbMeta } from './agents/workbuddy.mjs';
 import { askDoubao, doubaoDoctor, doubaoMeta } from './agents/doubao.mjs';
@@ -35,8 +35,56 @@ import { runSwarm, runSwarmWaves, loadSwarmTasks, parseSlots, renderReport, fmtM
 import { DECOMPOSE_CONTRACT, parseSubtasks, singleTask, buildBrief, briefDir, writeBrief, digest, renderDigest } from './lib/subagent.mjs';
 import { assemble, renderReport as renderBudget } from './lib/prompt.mjs';
 import { add as ephAdd, list as ephList, remove as ephRemove, clear as ephClear, gc as ephGc, briefBlock as ephBrief, readSkill as ephReadSkill, stats as ephStats, KINDS as EPH_KINDS } from './lib/ephemeral.mjs';
+// 会话回收：每派一次活，Trae / 豆包 / WorkBuddy 的「最近」都会多一条，跑一天就全是垃圾。
+// 这里在命令收尾时按「派活前的基线」把新增的清掉：WorkBuddy 真删，豆包用归档（它没有网页删除入口）。
+import { snapshotBaseline, gcAll } from './lib/session_gc.mjs';
+import { pickReviewer, pickReviewers, parseVerdict, buildReviewPrompt, buildFixPrompt, reviewAndFix, reviewWithFallback, reviewMultiWithFallback } from './lib/review.mjs';
+import { humanVerdict, humanIssues, humanReason } from './lib/humanize.mjs';
+import { LANE_DEFS } from './lib/lanes.mjs';
+
+/**
+ * 派活结束后回收新增会话。失败一律吞掉并打一行日志 ——
+ * 清理是卫生工作，不能因为客户端没开就把整批任务判成失败。
+ */
+async function gcAfterRun(base) {
+  if (!base) return null;
+  try {
+    const r = await gcAll(base);
+    const wbN = r.workbuddy ? r.workbuddy.done.filter((x) => x.ok).length : 0;
+    const dbN = r.doubao ? r.doubao.done.filter((x) => x.ok).length : 0;
+    const bad = [...(r.workbuddy?.done || []), ...(r.doubao?.done || [])].filter((x) => !x.ok);
+    if (wbN || dbN) console.error('[回收] 清掉本次派活新增会话：WorkBuddy ' + wbN + ' 条、豆包 ' + dbN + ' 条');
+    for (const b of bad) console.error('[回收] 未清掉「' + b.title + '」：' + b.reason);
+    for (const e of r.errors || []) console.error('[回收] ' + e);
+    return r;
+  } catch (e) {
+    console.error('[回收] 跳过：' + (e && e.message ? e.message : e));
+    return null;
+  }
+}
 
 const TASK_TIMEOUT_MS = Number(process.env.ORCH_TIMEOUT_MS || 240000);
+
+// 按通道设超时。成因：2026-11-15 实测 codebuddy 写 lib/par_num3.mjs（178 行）
+// 真实耗时 425.5 秒、一次成功 —— 而全局一刀切 240 秒正好切在它干到一半的位置，
+// 于是「codebuddy 总超时」被误读成「codebuddy 不行」，其实是上限设错。
+// 依据 memory/log.jsonl 的 p50/p90：trae 14.6s/53.9s、doubao 17.6s、
+// workbuddy 49.3s（实测长任务 234~274s）、codebuddy 69.5s/300s（实测 425s）。
+// 显式设 ORCH_TIMEOUT_MS 时统一覆盖，保持手动控制权。
+const EXPLICIT_TIMEOUT_MS = process.env.ORCH_TIMEOUT_MS ? Number(process.env.ORCH_TIMEOUT_MS) : null;
+const AGENT_TIMEOUT_MS = {
+  trae: Number(process.env.ORCH_TIMEOUT_TRAE || 120000),
+  doubao: Number(process.env.ORCH_TIMEOUT_DOUBAO || 120000),
+  workbuddy: Number(process.env.ORCH_TIMEOUT_WORKBUDDY || 300000),
+  // 2026-11-15 晚：codebuddy 默认模型从 hy4free 换成 deepseek-v4.1-flash 后，
+  // 同一任务 425s → 14s。480s 是「它真的很慢」时期的余量，现在只会让四路并行的
+  // 墙钟被它单独拖住（并行 = max），降到 180s。
+  codebuddy: Number(process.env.ORCH_TIMEOUT_CODEBUDDY || 180000),
+};
+function timeoutFor(agentName) {
+  if (EXPLICIT_TIMEOUT_MS) return EXPLICIT_TIMEOUT_MS;
+  return AGENT_TIMEOUT_MS[agentName] || TASK_TIMEOUT_MS;
+}
 const EST_INPUT = { codebuddy: 24848, trae: 0 };
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -95,10 +143,14 @@ function usage() {
   ask <agent> "<prompt>"     派任务（自动附带共享工作记忆）
   ask auto "<prompt>"        按任务性质自动挑 agent（代码→codebuddy，评审/解释→trae）
   auto "<prompt>"            同上，更短的写法
-  review <agent> <file>      让对方审文件，评审存进 reviews/
+  review <file> [--by <评审者>] [--author <产出者>]
+                             纠错 AI：找错不夸，最后必须给 VERDICT: ACCEPT|REVISE
+                             默认自动选**异源**评审者（评审者 ≠ 产出者），同一通道自审会被拒
   duo <agentA> <agentB> "p"  同题并行派给两个 agent，对比耗时与产出
   batch <agent> <任务源>      N 个小任务压进一次调用（省掉 N-1 份固定开销）
                              任务源：tasks.md 文件 / "甲|||乙|||丙" / - 开头的行
+  gc [--dry] [--all]         清掉派活留下的会话垃圾（WorkBuddy 真删 / 豆包归档）
+                              --dry 只列不删；--all 清全部（跳过当前选中的），默认只清派活痕迹
   top [n]                     吞吐看板：每批的墙钟 vs 串行，并行到底省了多少
   swarm <任务源> [--flags]    N 个独立任务跨 agent 并行跑（吞吐最高的一档）
   sub "<目标>" [--n 3]        把目标拆成子任务，各自独立执行，只回摘要（子 agent）
@@ -107,6 +159,11 @@ function usage() {
                              --out report.md               报告落到文件
                              --resume                      接着上次没跑完的
                              --no-switch                   失败不换路重试
+                             --land                        把产物写进磁盘（隐含 --verify）
+                             --verify                      程序化验收：语法/规模/契约/导出名
+                             --review                      跑完派给异源评审者挑错（看「话说得对不对」）
+                             --max-fix N                   REVISE 时自动回流返工 N 轮
+                             --strict-regress              改已有文件时，行为与旧版本不一致即判失败（默认只报告）
   stats                      效率看板：次数/成功率/均耗时/均字符/token/成本
   budget                     今天的额度账（调用次数 / token / 剩余）
   health                     谁活着、谁占着锁、还剩多少额度
@@ -135,14 +192,16 @@ if (cmd === 'list') {
   // 2026-11-14：--json 便于别的 agent 直接消费（不用正则解析中文表格）
   if (process.argv.includes('--json')) {
     const rows = Object.entries(REGISTRY).map(([k, v]) => ({
-      name: k, kind: v.meta.kind, transport: v.meta.transport, port: v.meta.port,
-      strengths: v.meta.strengths, note: v.meta.note || null,
+      name: k, kind: v.meta.kind, transport: v.meta.transport || '?', port: v.meta.port ?? '?',
+      strengths: v.meta.strengths || [], note: v.meta.note || null,
     }));
     console.log(JSON.stringify({ ok: true, count: rows.length, agents: rows }, null, 2));
     process.exit(0);
   }
   for (const [k, v] of Object.entries(REGISTRY)) {
-    console.log(`${k}\t${v.meta.kind}\t${v.meta.transport}:${v.meta.port}\t${v.meta.strengths.join(' / ')}`);
+    // 兜底：新加通道只写了 kind/port 时，list 不能整条崩掉（doubao 就这么崩的）。
+    const m = v.meta || {};
+    console.log(`${k}\t${m.kind || '?'}\t${(m.transport || '?')}:${m.port ?? '?'}\t${(m.strengths || []).join(' / ')}`);
   }
   process.exit(0);
 }
@@ -210,7 +269,7 @@ if (cmd === 'memory') {
       sk.once('error', () => done(false));
     });
     const traeUp = await portOpen(9223);
-    const cbCli = path.join(process.env.USERPROFILE || 'C:\Users\kkk', 'Tools', 'codebuddy-cli', 'package', 'bin', 'codebuddy');
+    const cbCli = path.join(process.env.USERPROFILE || process.env.HOME || '.', 'Tools', 'codebuddy-cli', 'package', 'bin', 'codebuddy');
     const cbOk = fs.existsSync(cbCli) || fs.existsSync(cbCli + '.cmd') || fs.existsSync(cbCli + '.cmd');
     const locks = listLocks();
     const healthRows = [];
@@ -428,9 +487,12 @@ async function dispatch(kindLabel, rawPrompt, extra = {}) {
           console.error('[信箱] ' + name + ' 失败，退回直连：' + String((e && e.message) || e).slice(0, 90));
         }
       }
-      return ag.ask(p, { timeoutMs: TASK_TIMEOUT_MS });
+      // model 透传：故障换模型重试时由上层指定「这一条用哪个模型」。
+      // 只有 codebuddy 认这个（--model / CODEBUDDY_MODEL）；workbuddy 的模型是界面状态，
+      // trae / doubao 根本换不了 —— 不认的通道拿到它会忽略，不会报错。
+      return ag.ask(p, { timeoutMs: timeoutFor(name), model: extra.model });
     },
-    TASK_TIMEOUT_MS + 20000, name
+    timeoutFor(name) + 20000, name
   ), {
     onWait: (n) => console.error(`[队列] ${name} 的 ${n} 路都占满，排队等待…`),
   });
@@ -523,6 +585,19 @@ async function dispatch(kindLabel, rawPrompt, extra = {}) {
   };
   if (r && r.cost) entry.cost = r.cost;
   if (r && r.usage) entry.usage = r.usage;
+  // 真实 token 用量（2026-11-15 加）。在此之前 392 条流水的 usage 永远是 {in:0,out:0}，
+  // 不是「没消耗」，是「没去取」。现在 trae 会用 CDP Network 监听 commercial/get_session_usage
+  // 拿回 input/output/cache_read，拿不到就整段不写（宁可缺字段，也不要用 0 冒充真实值）。
+  if (r && r.tokens) {
+    entry.usage = {
+      in: r.tokens.input,
+      out: r.tokens.output,
+      cacheRead: r.tokens.cacheRead,
+      cacheWrite: r.tokens.cacheWrite,
+      credits: r.tokens.credits,
+      model: r.tokens.model,
+    };
+  }
   if (wantContract) entry.contract = contract ? (contract.ok ? 'ok' : contract.reason) : 'skipped';
   if (syntaxReport) entry.syntax = syntaxReport.ok ? 'ok' : (syntaxReport.lang + ':' + String(syntaxReport.error || '').split(String.fromCharCode(10))[0]).slice(0, 120);
   if (r && r.cached) entry.cached = true;
@@ -556,6 +631,8 @@ async function dispatch(kindLabel, rawPrompt, extra = {}) {
     }
   }
 
+  // 记「这条用的哪个模型」。拿不到就整段不写 —— 不用 0/空串冒充已知。
+  if (extra && extra.model) entry.model = extra.model;
   appendLog(entry);
   try { setLastJob(entry); } catch { }
 
@@ -608,6 +685,7 @@ try {
       autoAgent = routeTask(prompt);
       console.error('[选路] ' + autoAgent + '（' + prompt.length + ' 字符，自动判定）');
     }
+    const gcBase = process.env.ORCH_GC === '0' ? null : await snapshotBaseline();
     const r = await dispatch('ask', prompt, { agent: autoAgent, ...((skill || dry) ? { skill, dry } : {}) });
     if (r.dry) {
       console.log('=== 将要发给 ' + r.agent + ' 的完整 prompt（' + r.prompt.length + ' 字符，未发出）===');
@@ -615,26 +693,117 @@ try {
       process.exit(0);
     }
     console.log(renderOut(r, r.contract, r.syntax));
-    process.exit(0);
+    await gcAfterRun(gcBase);
+    // 通道拿到空文本 = 通道问题，不是「跑完了」：退出码要让调用方分得开（atwo 的 EXIT.channel=5）
+    process.exit(String((r && r.addedText) || '').trim() ? 0 : 5);
   }
 
   if (cmd === 'review') {
-    const file = rest[0];
-    if (!file) { console.error('要指定文件'); process.exit(2); }
+    // 纠错 AI：默认**异源**评审（评审者自动避开产出者），可用 --by 指定、--author 声明产出者。
+    // 11-13 那次 trae 审 trae 自己的文件，等于自说自话 —— 这条规则就是为它立的。
+    const flags = new Set(rest.filter((x) => x.startsWith('--')));
+    const argOf = (name) => { const i = rest.indexOf(name); return i >= 0 ? rest[i + 1] : null; };
+    const positional = rest.filter((x, i) => !x.startsWith('--') && !(i > 0 && rest[i - 1].startsWith('--')));
+    const file = positional[0];
+    if (!file) { console.error('用法: review <file> [--by <评审者>] [--author <产出者>]'); process.exit(2); }
     const abs = path.resolve(file);
     if (!fs.existsSync(abs)) { console.error('文件不存在: ' + abs); process.exit(2); }
     const base = path.basename(abs);
+    const authorArg = argOf('--author') || 'dsh';
+    const prefer = argOf('--by');
+    if (prefer && prefer === authorArg) { console.error('拒绝同源评审：产出者和评审者都是 ' + prefer + '，这样评等于没评'); process.exit(2); }
+    // 候选队列而不是单个 —— 评审者超时是常态（2026-11-15 16:00 实测 codebuddy 240s / trae 260s 双超时）
+    // 多评审者：--by-multi N / --reviewers N（同义）。
+    // 上限 3 —— 四路全上之后如果要返工，就没有通道可用了。
+    const multiRaw = argOf('--by-multi') || argOf('--reviewers');
+    const multiN = multiRaw ? Number(multiRaw) : 0;
+    if (multiRaw && (!Number.isFinite(multiN) || multiN < 1)) { console.error('--by-multi 需要一个 >=1 的数字，收到: ' + multiRaw); process.exit(2); }
+    if (multiN > 3) { console.error('--by-multi 上限 3（四路全上之后返工没通道可用），收到: ' + multiN); process.exit(2); }
+    const candidates = pickReviewers(authorArg, { prefer });
+    if (!candidates.length) { console.error('没有可用的异源评审者：除了 ' + authorArg + ' 之外没有别的通道可用'); process.exit(2); }
     const content = fs.readFileSync(abs, 'utf8').slice(0, 12000);
-    const r = await dispatch('review', REVIEW_PROMPT(base, content), { summary: '评审 ' + base });
+
+    if (multiN > 1) {
+      // 多评审路径：同时问 N 个，都 ACCEPT 才算过；分歧不投票，原文各自成档。
+      console.log('[review] 产出者 ' + authorArg + ' → 多评审 ' + multiN + ' 个：' + candidates.slice(0, multiN).join('、') + '（异源）');
+      const mr = await reviewMultiWithFallback({
+        prompt: buildReviewPrompt(base, content, { author: authorArg }),
+        summary: '多评审 ' + base + ' ×' + multiN,
+        candidates: candidates.slice(0, multiN),
+        count: multiN,
+        dispatch,
+        onProgress: (ev) => { if (ev.type === 'warn') console.log('[review] ' + ev.msg); },
+      });
+      if (!mr.votes.length) {
+        console.error('[review] 没评成：' + multiN + ' 个异源评审者全部失败');
+        process.exit(3);
+      }
+      const outDir = path.join(ROOT, 'reviews');
+      fs.mkdirSync(outDir, { recursive: true });
+      const stamp = nowStr();
+      const head = '# 多评审：' + base + '\n\n- 时间：' + new Date().toLocaleString('zh-CN')
+        + '\n- 产出者：' + authorArg
+        + '\n- 共识：' + (mr.consensus || '无') + (mr.degraded ? '（降级：' + mr.degradedReason + '）' : '')
+        + '\n- 最终裁决：' + (mr.verdict || '未给出') + '（问题合计 ' + mr.issues + ' 条）\n\n'
+        + '| 评审者 | 裁决 | 问题数 |\n|---|---|---|\n'
+        + mr.votes.map((x) => '| ' + x.reviewer + ' | ' + (x.verdict || '未给出') + ' | ' + (x.issues || 0) + ' |').join('\n') + '\n';
+      const sumFile = path.join(outDir, 'multi-review-' + base + '-' + stamp + '.md');
+      fs.writeFileSync(sumFile, head, 'utf8');
+      // 原文各存一份 —— 分歧的价值在原文里，汇总表看不出来
+      const perFiles = [];
+      for (const x of mr.reviewTexts) {
+        const f = path.join(outDir, x.reviewer + '-review-' + base + '-' + stamp + '.md');
+        fs.writeFileSync(f, '# ' + x.reviewer + ' 评审：' + base + '\n\n- 产出者：' + authorArg + '\n\n---\n\n' + x.text + '\n', 'utf8');
+        perFiles.push(f);
+      }
+      console.log('');
+      for (const x of mr.votes) console.log('  · ' + x.reviewer + ' → ' + (x.verdict || '未给出') + '（问题 ' + (x.issues || 0) + ' 条）');
+      console.log('');
+      // 共识行说人话（`all-revise` 这种东西目标用户看不懂），裁决行保留机器值给退出码和脚本用
+      console.log('[review] 共识：' + humanVerdict({ consensus: mr.consensus, verdict: mr.verdict, votes: mr.votes, degraded: mr.degraded, issues: mr.issues }));
+      console.log('[review] 裁决：' + (mr.verdict || '**所有票都没解析到 VERDICT**') + '（' + humanIssues(mr.issues) + '）');
+      if (mr.degraded) console.log('[review] 注意：' + mr.degradedReason + ' —— 结论照出，但这不是完整的多评审');
+      console.log('[saved] ' + sumFile);
+      for (const f of perFiles) console.log('[saved] ' + f);
+      process.exit(mr.verdict === 'ACCEPT' ? 0 : 1);
+    }
+
+    console.log('[review] 产出者 ' + authorArg + ' → 候选 ' + candidates.join(' → ') + '（异源）');
+    const rr = await reviewWithFallback({
+      prompt: buildReviewPrompt(base, content, { author: authorArg }),
+      summary: '评审 ' + base + ' by ' + (prefer || candidates[0]),
+      candidates,
+      dispatch,
+      onProgress: (ev) => { if (ev.type === 'warn') console.log('[review] ' + ev.msg); },
+    });
+    if (!rr.r) {
+      // 三态里的第三种：没评成。既不是通过也不是不通过 —— 它就是没有结论，
+      // 所以既不能写存档冒充评过，也不能返回 0。
+      console.error('[review] 没评成：' + rr.tried.length + ' 个异源评审者全部失败（' + rr.tried.join('、') + '）');
+      process.exit(3);
+    }
+    const r = rr.r;
+    const reviewer = rr.reviewer;
+    const v = { verdict: rr.verdict, issues: rr.issues, weak: rr.weak };
 
     const outDir = path.join(ROOT, 'reviews');
     fs.mkdirSync(outDir, { recursive: true });
-    const outFile = path.join(outDir, `${who}-review-${base}-${nowStr()}.md`);
+    const outFile = path.join(outDir, `${reviewer}-review-${base}-${nowStr()}.md`);
+    // 试过并失败的要写进头部：否则后来人只看到「X 给的结论」，不知道前面挂了几个
+    const failed = rr.tried.filter((t) => t !== reviewer);
     fs.writeFileSync(outFile,
-      `# ${who} 评审：${base}\n\n- 时间：${new Date().toLocaleString('zh-CN')}\n- 耗时：${((r.elapsedMs || 0) / 1000).toFixed(1)}s\n\n---\n\n${r.addedText || '(空)'}\n`, 'utf8');
+      `# ${reviewer} 评审：${base}\n\n- 时间：${new Date().toLocaleString('zh-CN')}\n- 产出者：${authorArg}\n- 耗时：${((r.elapsedMs || 0) / 1000).toFixed(1)}s\n- 裁决：${v.verdict || '未给出'}（问题 ${v.issues} 条）\n` +
+      (failed.length ? `- 试过并失败：${failed.join('、')}\n` : '') +
+      `\n---\n\n${r.addedText || '(空)'}\n`, 'utf8');
     console.log(renderOut(r, r.contract, r.syntax));
-    console.log('\n[saved] ' + outFile);
-    process.exit(0);
+    console.log('');
+    if (!v.verdict) console.log('[review] 裁决：**没解析到 VERDICT 行**（评审者没按要求给结论，不能当成通过）');
+    else console.log('[review] 裁决：' + v.verdict + '（' + humanIssues(v.issues) + (v.weak ? '，但一条也没列，评审本身不合格' : '') + '）'
+      + '  —— ' + humanVerdict({ consensus: null, verdict: v.verdict, votes: [{ reviewer, verdict: v.verdict, issues: v.issues }], degraded: false, issues: v.issues }));
+    console.log('[saved] ' + outFile);
+    // 退出码四态：0=ACCEPT 1=REVISE 2=用法/同源/无候选 3=没评成。
+    // 原来一律 exit 0，挂 CI 等于白挂 —— 没有后果的验收不算验收。
+    process.exit(v.verdict === 'ACCEPT' ? 0 : 1);
   }
 
   // ---- duo：同一道题并行派给两个 agent，看谁快谁好 ----
@@ -646,6 +815,7 @@ try {
       process.exit(2);
     }
     const t0 = Date.now();
+    const gcBaseDuo = process.env.ORCH_GC === '0' ? null : await snapshotBaseline();
     const runOne = (name) => dispatch('duo', prompt, { agent: name, summary: '[duo] ' + prompt.slice(0, 60) })
       .then((r) => ({ name, ok: true, text: r.addedText || '', ms: Date.now() - t0, chars: (r.addedText || '').length, cost: r.cost }))
       .catch((e) => ({ name, ok: false, text: '', ms: Date.now() - t0, err: e.message }));
@@ -659,7 +829,8 @@ try {
     }
     const okCount = res.filter((x) => x.ok).length;
     console.log('[汇总] 并行墙钟 ' + ((Date.now() - t0) / 1000).toFixed(1) + 's，成功 ' + okCount + '/' + res.length);
-    process.exit(okCount ? 0 : 1);
+    await gcAfterRun(gcBaseDuo);
+    process.exit(okCount === res.length ? 0 : 5);  // 部分成功同样是通道问题，不该等于「全跑完了」
   }
 
   // ---- stats：效率看板（从 log.jsonl 汇总）----
@@ -793,12 +964,13 @@ try {
 
     line(cfg.hasLocal ? '✓' : '·', '本机配置', cfg.hasLocal ? cfg.localFile : `还没建（node orchestra.mjs doctor --init 生成模板）`);
     console.log('');
-    console.log(!gitVer || !exeOk || !cbOk ? '结论：有硬缺口（带 ✗ 的项修好才能派活）' : '结论：可以正常派活');
+    const hardGap = !gitVer || !exeOk || !cbOk;
+    console.log(hardGap ? '结论：有硬缺口（带 ✗ 的项修好才能派活）' : '结论：可以正常派活');
     if (process.argv.includes('--init')) {
       const r = cfgMod.writeLocalTemplate(process.argv.includes('--force'));
       console.log(r.ok ? '已生成 ' + r.file : '未生成：' + r.reason);
     }
-    process.exit(0);
+    process.exit(hardGap ? 3 : 0);
   }
 
   // ---- probe：适配层还认不认得当前界面（不派活、不花 token）----
@@ -813,26 +985,32 @@ try {
       s.on('error', () => done(false));
     });
     console.log(`  ${portOk ? '✓' : '✗'} CDP 端口 ${cfg.traePort}  ${portOk ? '在监听' : '没监听'}`);
+    // 结论对不上 = 前置条件不满足，退出码要让调用方分得开（atwo 的 EXIT.precondition=3）
+    let probeOk = false;
     if (!portOk) {
       console.log('\n  结论：Trae 没开，页面探不了。先跑一次 ask trae 让它起来，再 probe。');
-      process.exit(0);
+      process.exit(3);
     }
     try {
+      const snap = await snapshotTrae({ port: cfg.traePort });
       const txt = String(await peekTrae({ port: cfg.traePort }) || '');
-      const hasInput = /添加上下文|完全访问|发送|正常模式|deepseek/i.test(txt);
-      const hasTurn = /TRAE|由 AI 生成|思考过程/.test(txt);
+      const editable = Number((snap && snap.editable) || 0);
+      const turns = Number((snap && snap.agentTurns) || 0);
+      // 判据是「输入框还认不认得」，那是派活的前提。别再拿按钮文案当特征词：
+      // Trae 每个版本的按钮文字都换过一轮，而选择器从 1.0 到今天没变过。
       console.log(`  ${txt.length > 20 ? '✓' : '✗'} 页面文本可取  ${txt.length} 字符`);
-      console.log(`  ${hasInput ? '✓' : '✗'} 输入区特征词  ${hasInput ? '界面结构没大变' : '界面可能改了 —— 适配层需更新'}`);
-      console.log(`  ${hasTurn ? '✓' : '·'} 对话区标记    ${hasTurn ? '' : '还没有任何回合，属正常'}`);
+      console.log(`  ${editable > 0 ? '✓' : '✗'} 输入框选择器  ${editable > 0 ? '命中 ' + editable + ' 个可编辑区' : '一个都没命中 —— 选择器需更新'}`);
+      console.log(`  · 对话区回合    ${turns} 个${turns ? '' : '（空会话，属正常）'}`);
       console.log('');
-      console.log(txt.length > 20 && hasInput
+      probeOk = txt.length > 20 && editable > 0;
+      console.log(probeOk
         ? '  结论：适配层对得上，可以正常派活'
         : '  结论：对不上，需更新选择器。先跑 node test/selftest.mjs 确认纯函数层仍正确');
     } catch (e) {
       console.log('  ✗ peek 失败：' + (e && e.message ? e.message : e));
       console.log('\n  结论：连不上 Agent 面板。可能端口被别的窗口占了，或 Trae 刚起来还没建好页面。');
     }
-    process.exit(0);
+    process.exit(probeOk ? 0 : 3);
   }
 
   // ---- ctx：只看「这次派活会注入什么、各占多少 token」，零成本不调模型 ----
@@ -876,8 +1054,8 @@ try {
       // 适配层的 ask() 返回对象 {ok,addedText,usage}，不是字符串。
       // 早期这里直接 String(...) → "[object Object]" → 整批解析降级成 fallback。
       const res = await withLockPool(agentName, 1, () => withTimeout(
-        () => ag.ask(prompt, { timeoutMs: TASK_TIMEOUT_MS }),
-        TASK_TIMEOUT_MS + 20000, agentName,
+        () => ag.ask(prompt, { timeoutMs: timeoutFor(agentName) }),
+        timeoutFor(agentName) + 20000, agentName,
       ), { onWait: () => console.error('[队列] ' + agentName + ' 正忙，排队等待…') });
       if (typeof res === 'string') {
         raw = res;
@@ -1080,7 +1258,7 @@ try {
   // swarm 把这些开销摊到 N 件事上，并且 trae(1 路快) 与 codebuddy(6 路准) 两条流水线同时跑。
   if (cmd === 'swarm') {
     const argv = [who, ...rest].filter(x => x !== undefined);
-    const flags = { mode: 'auto', slotsSpec: '', out: '', resume: false, switchOnFail: true, land: false, verify: false, maxFix: 0, force: false, deep: false, fast: false };
+    const flags = { mode: 'auto', slotsSpec: '', out: '', resume: false, switchOnFail: true, land: false, verify: false, maxFix: 0, reviewers: 0, force: false, deep: false, fast: false, review: false };
     const words = [];
     for (let i = 0; i < argv.length; i++) {
       const a = argv[i];
@@ -1093,8 +1271,11 @@ try {
       else if (a === '--verify') flags.verify = true;
       else if (a === '--force') flags.force = true;
       else if (a === '--deep') flags.deep = true;
+      else if (a === '--strict-regress') flags.strictRegress = true; // 对拍不一致时判失败（默认只报告）
       else if (a === '--fast') flags.fast = true; // 只要一段人看的文字、不要产物：退回 DOM（省文件开销）
+      else if (a === '--review') flags.review = true; // 跑完把产物派给异源评审者挑错（配合 --max-fix N 可自动返工）
       else if (a === '--max-fix') flags.maxFix = Math.max(0, Number(argv[++i] || 0));
+      else if (a === '--reviewers' || a === '--by-multi') flags.reviewers = Math.max(1, Number(argv[++i] || 0)); // 多评审者个数（reviewAndFix 早就支持 opts.reviewers，之前 swarm 没透传，atwo 传 --by-multi 直接被判未知参数）
       else if (a.startsWith('--')) { console.error('未知参数 ' + a); process.exit(2); }
       else words.push(a);
     }
@@ -1129,15 +1310,19 @@ try {
         console.error('[' + t + '] ⚠ #' + ev.id + ' 验收未过 ' + (ev.target || '') + '  ' + why);
       }
       else if (ev.type === 'fix') console.error('[' + t + '] ↺ #' + ev.id + ' 第 ' + ev.round + ' 轮回喂重试 ' + (ev.target || ''));
+      else if (ev.type === 'regress') console.error('[' + t + '] ⇄ #' + ev.id + ' 回归对拍有变化（' + String(ev.detail || '').slice(0, 90) + '）');
     };
     const t0 = Date.now();
+    // 派活前先记下三条客户端「最近」列表的现状，结束好做差集。
+    // ORCH_GC=0 可关闭（排查会话问题时用）。
+    const gcBase = process.env.ORCH_GC === '0' ? null : await snapshotBaseline();
     let out = null;
     try {
       // 分波次：任务带 deps 时按依赖图切层，逐层并行；不带 deps 时行为与原来完全一致。
       // 一把并行的代价是「下游基于空气写代码」，返工吃掉并行赚的全部收益。
       out = await runSwarmWaves(tasks, {
         mode: flags.mode, slots, resume: flags.resume, taskSource: src,
-        switchOnFail: flags.switchOnFail,
+        land: flags.land, verify: flags.verify, maxFix: flags.maxFix, force: flags.force, deep: flags.deep, strictRegress: !!flags.strictRegress,
         land: flags.land, verify: flags.verify, maxFix: flags.maxFix, force: flags.force, deep: flags.deep,
         fast: flags.fast,
         dispatchFn: (text, extra) => dispatch('swarm', text, extra),
@@ -1167,12 +1352,110 @@ try {
         console.error('  ' + mark + ' #' + r.id + ' ' + (v.target || '(无目标)') + (bad ? '  未过：' + bad : ''));
       }
     }
+    // 纠错 AI：把落盘产物派给**异源**评审者挑错，REVISE 直接回流给产出者返工。
+    // 与 --verify 的分工很硬：verify 只看形状（语法/规模/契约/导出名），
+    // review 看「说的话对不对」—— 这正是 11-15 我自己错了两小时、要用户拿截图纠正的那类错。
+    // 评审否决要给后果。没有后果的验收等于没验收 ——
+    // 第一版这里只统计不判断，生成全 done 就 exit 0，评审全 REVISE 也照样 0，
+    // 挂到 CI 上等于白挂。
+    let reviewBlocked = 0;
+    if (flags.review) {
+      const cand = out.results.filter((r) => r.status === 'done' && r.landPath);
+      if (!cand.length) {
+        console.error('[review] 没有可评审的落盘产物（--review 要配合 --land，且产物得先过验收）');
+      } else {
+        console.error('[review] 评审 ' + cand.length + ' 个产物（异源；返工轮次上限 ' + flags.maxFix + '）');
+        const rv = await reviewAndFix(
+          cand.map((r) => ({ id: r.id, agent: r.agent, file: path.resolve(r.landPath) })),
+          {
+            dispatch: (text, extra) => dispatch('swarm', text, extra),
+            onProgress: (ev) => {
+              const t = new Date().toISOString().slice(11, 19);
+              if (ev.type === 'review') console.error('[' + t + '] ⚖ #' + ev.id + ' ' + ev.reviewer + ' → ' + (ev.verdict || '未给裁决') + '（问题 ' + ev.issues + ' 条' + (ev.weak ? '，评审不合格' : '') + '）');
+              else if (ev.type === 'fix') console.error('[' + t + '] ↺ #' + ev.id + ' 第 ' + ev.round + ' 轮返工完成，验收 ' + (ev.verifyOk ? '通过' : '未过'));
+              else if (ev.type === 'warn') console.error('[' + t + '] ! ' + ev.msg);
+            },
+            maxRounds: flags.maxFix,
+            reviewers: flags.reviewers || 0,
+            reviewsDir: path.join(ROOT, 'reviews'),
+          },
+        );
+        const accept = rv.filter((x) => x.verdict === 'ACCEPT').length;
+        const revise = rv.filter((x) => x.verdict === 'REVISE').length;
+        const none = rv.filter((x) => !x.verdict).length;
+        const fixFailed = rv.filter((x) => x.reason === 'fix-failed').length;
+        reviewBlocked = rv.filter((x) => !x.ok).length;
+        console.error('[review] 裁决 ACCEPT ' + accept + ' / REVISE ' + revise + ' / 未给裁决 ' + none
+          + (fixFailed ? ' / 返工未落地 ' + fixFailed : '')
+          + (reviewBlocked ? '（未通过 ' + reviewBlocked + ' 个，批次判失败）' : ''));
+      }
+    }
     if (flags.out) {
       try { fs.writeFileSync(flags.out, rep, 'utf8'); console.error('[swarm] 报告已写入 ' + flags.out); } catch (e) { console.error('[swarm] 写报告失败：' + e.message); }
     } else {
       console.log(rep);
     }
-    process.exit(okN === out.results.length ? 0 : 1);
+    await gcAfterRun(gcBase);
+    // 退出码要同时看两件事：活干完了没有，以及干出来的活过没过审。
+    // 只看前者，评审就是摆饰。
+    if (reviewBlocked) console.error('[swarm] 评审未通过 ' + reviewBlocked + ' 个产物，本批判失败');
+    // 2026-11-16 修的第五个洞（附实测）：上面只看「任务 done」和「评审被否」，
+    // 不看验收结果。实测：codebuddy 自写盘交付 docs/selfwrite-probe.md，
+    // 落盘 1/1、验收 0/1（markdown 章节 0 个），进程却 exit 0 —— 挂 CI 等于白挂。
+    // 验收没过必须有后果，和评审否决一样。
+    const verifyFailed = out.results.filter((r) => r.status === 'done' && r.verify && r.verify.ok === false).length;
+    if (verifyFailed) console.error('[swarm] 验收未过 ' + verifyFailed + ' 个，批次判失败');
+    process.exit(okN === out.results.length && reviewBlocked === 0 && verifyFailed === 0 ? 0 : 1);
+  }
+
+  // ---- gc：清掉「派活留下的会话垃圾」 ----
+  // 背景：每派一次活，客户端「最近」列表就多一条。Trae 条目级没有删除入口，
+  // 豆包只能归档，WorkBuddy 能真删 —— 三条通道的能力不一样，这里分开处理。
+  // 默认只清「能看出是派活痕迹」的标题，绝不碰用户自己的对话；--all 才清全部（跳过当前选中的）。
+  if (cmd === 'gc') {
+    const all = rest.includes('--all') || process.argv.includes('--all');
+    const dry = rest.includes('--dry') || process.argv.includes('--dry');
+    // Trae 的删除不可恢复，给一个可撤销的退路：--archive 改成归档
+    const useArchive = rest.includes('--archive') || process.argv.includes('--archive');
+    // 派活痕迹：Orchestra 派给 GUI 的提示词开头都很相似，客户端拿它当标题
+    const PAT = /^(读取并执行任务|执行任务文件|只回复|回复两个字|回复收到|Write |Read and Execute|Execute Task|我来读取任务|我先读取任务)/;
+    const { listWbSessions, deleteWbSession, listDoubao, archiveDoubaoAt, listTraeSessions, deleteTraeSession, archiveTraeSession } = await import('./lib/session_gc.mjs');
+    let wb = [], db = [], tr = [];
+    try { wb = await listWbSessions(); } catch (e) { console.error('[gc] WorkBuddy 没连上：' + e.message); }
+    try { db = await listDoubao(); } catch (e) { console.error('[gc] 豆包没连上：' + e.message); }
+    try { tr = await listTraeSessions(); } catch (e) { console.error('[gc] Trae 没连上：' + e.message); }
+
+    const wbHit = wb.filter((s) => !s.selected && (all || PAT.test(s.title)));
+    const dbHit = db.filter((s) => !s.active && (all || PAT.test(s.title)));
+    // hasMore=false 的是当前选中的那条：⋯ 图标不渲染，菜单开不出来，跳过
+    const trHit = tr.filter((s) => s.hasMore && (all || PAT.test(s.title)));
+    const trStuck = tr.filter((s) => !s.hasMore && (all || PAT.test(s.title)));
+    console.log('[gc] WorkBuddy 共 ' + wb.length + ' 条，命中 ' + wbHit.length + ' 条（真删）');
+    for (const s of wbHit) console.log('      - ' + s.title.slice(0, 30));
+    console.log('[gc] 豆包 共 ' + db.length + ' 条，命中 ' + dbHit.length + ' 条（归档）');
+    for (const s of dbHit) console.log('      - ' + s.title.slice(0, 30));
+    console.log('[gc] Trae 共 ' + tr.length + ' 条，命中 ' + trHit.length + ' 条（' + (useArchive ? '归档' : '真删') + '）');
+    for (const s of trHit) console.log('      - ' + s.title.slice(0, 30));
+    if (trStuck.length) console.log('[gc] Trae 另有 ' + trStuck.length + ' 条是选中态（⋯ 不渲染，先切到别的会话再来）');
+
+    if (dry) { console.log('[gc] --dry 只列不删'); process.exit(0); }
+    let wbOk = 0, dbOk = 0, trOk = 0;
+    for (const s of wbHit) { const r = await deleteWbSession(s.id); if (r.ok) wbOk++; else console.error('[gc] 删失败「' + s.title.slice(0, 20) + '」：' + r.reason); }
+    // 豆包按索引删，索引在过程中会变 → 每删一条重新取列表
+    for (const s of dbHit) {
+      const now = await listDoubao();
+      const idx = now.findIndex((x) => x.title === s.title && !x.active);
+      if (idx < 0) continue;
+      const r = await archiveDoubaoAt(idx);
+      if (r.ok) dbOk++; else console.error('[gc] 归档失败「' + s.title.slice(0, 20) + '」：' + r.reason);
+    }
+    for (const s of trHit) {
+      const r = useArchive ? await archiveTraeSession(s.id) : await deleteTraeSession(s.id);
+      if (r.ok) trOk++; else console.error('[gc] ' + (useArchive ? '归档' : '删') + '失败「' + s.title.slice(0, 20) + '」：' + r.reason);
+      await new Promise((res) => setTimeout(res, 400));
+    }
+    console.log('[gc] 完成：WorkBuddy 删 ' + wbOk + '/' + wbHit.length + '，豆包归档 ' + dbOk + '/' + dbHit.length + '，Trae ' + (useArchive ? '归档 ' : '删 ') + trOk + '/' + trHit.length);
+    process.exit(0);
   }
 
   // ---- top：吞吐看板。看清「并行到底省了多少」这件事，靠的是数字不是感觉。 ----

@@ -366,6 +366,67 @@ export async function askFile(taskPrompt, opts = {}) {
   };
 }
 
+/**
+ * 换模型（2026-11-16 实测可用的唯一一条 GUI 通道）。
+ *
+ * 为什么这块必须短轮询：点开 trigger 之后菜单只活几百毫秒，
+ * 先 sleep(900) 再查必然拿到空数组（我第一版就是这么写的，误判成「菜单不是 DOM」）。
+ * 现在 120ms 一轮、最多 10 轮，抓到就立刻点。
+ *
+ * 判据用「读回 trigger 的文字」，不用返回值 —— 点一下没报错不代表切成功了。
+ *
+ * @param {string} name 菜单里显示的名字，如 Hy3 / GLM-5.3-Flash / Kimi-K3.1-Pro
+ * @returns {Promise<{ok:boolean, from:string|null, to:string|null, reason?:string, menu?:string[]}>}
+ *          永不抛异常：换模型是优化，不是前置条件（切不动只记一行，不阻断派活）
+ */
+export async function setModel(name) {
+  const want = String(name == null ? '' : name).trim();
+  if (!want) return { ok: false, from: null, to: null, reason: '没给模型名' };
+  const open = await portOpen();
+  if (!open) return { ok: false, from: null, to: null, reason: '端口 ' + PORT + ' 没开' };
+
+  let c;
+  try {
+    c = await connect();
+    const CUR = `(() => { const t = document.querySelector('.cr-model-selector__trigger'); return t ? t.textContent.trim().replace(/\\s+/g, ' ') : null; })()`;
+    const from = await c.ev(CUR);
+    if (from && from.includes(want)) return { ok: true, from, to: from, reason: '本来就是它' };
+
+    await c.ev(`(() => { const b = document.querySelector('.cr-model-selector__trigger'); if (b) { b.click(); return 'ok'; } return 'no-trigger'; })()`);
+
+    const ITEMS = `(() => [...document.querySelectorAll('.cr-model-selector__item')].map((el) => {
+      const r = el.getBoundingClientRect();
+      return { t: el.textContent.trim().replace(/\\s+/g, ' ').slice(0, 40), vis: r.width > 10 && r.height > 6 };
+    }).filter((x) => x.vis).map((x) => x.t))()`;
+
+    let menu = [];
+    for (let i = 0; i < 10; i++) {
+      await sleep(120);
+      menu = (await c.ev(ITEMS)) || [];
+      if (menu.length) break;
+    }
+    if (!menu.length) return { ok: false, from, to: from, reason: '点了 trigger 但菜单没弹出（原生菜单或还没渲染）', menu: [] };
+
+    const hit = await c.ev(`(() => {
+      const want = ${JSON.stringify(want)};
+      for (const el of document.querySelectorAll('.cr-model-selector__item')) {
+        if (el.textContent.replace(/\\s+/g, ' ').includes(want)) { el.click(); return 'clicked'; }
+      }
+      return 'not-found';
+    })()`);
+    if (hit !== 'clicked') return { ok: false, from, to: from, reason: '菜单里没有「' + want + '」', menu };
+
+    await sleep(1200);
+    const to = await c.ev(CUR);
+    if (to && to.includes(want)) return { ok: true, from, to, menu };
+    return { ok: false, from, to, reason: '点了但 trigger 还是「' + to + '」', menu };
+  } catch (e) {
+    return { ok: false, from: null, to: null, reason: (e && e.message) || String(e) };
+  } finally {
+    try { if (c) c.close(); } catch { }
+  }
+}
+
 export async function doctor() {
   const open = await portOpen();
   return {
@@ -382,4 +443,40 @@ export async function doctor() {
 if (process.argv[1] && process.argv[1].replace(/\\/g, '/').endsWith('/agents/workbuddy.mjs')) {
   const p = process.argv[2] || '只回复两个字：收到';
   ask(p).then((r) => { console.log(r.text); console.log('---', r.ms + 'ms'); }).catch((e) => { console.error('ERR', e.message); process.exit(1); });
+}
+
+/**
+ * 只读一次菜单：当前选的是哪个、菜单里现在有哪些模型。
+ *
+ * 为什么要有它：模型会消失（用户 2026-11-17：「hy3 没了，模型变动很正常」）。
+ * 派活前问一次菜单，比失败后再问便宜得多 —— 失败一次是 45 秒起。
+ * 不点任何模型，读完按 Escape 关菜单。
+ */
+export async function listModels() {
+  let c;
+  try {
+    const open = await portOpen();
+    if (!open) return { ok: false, reason: '端口 ' + PORT + ' 没开' };
+    c = await connect();
+    const CUR = `(() => { const t = document.querySelector('.cr-model-selector__trigger'); return t ? t.textContent.trim().replace(/\s+/g, ' ') : null; })()`;
+    const current = await c.ev(CUR);
+    await c.ev(`(() => { const b = document.querySelector('.cr-model-selector__trigger'); if (b) { b.click(); return 'ok'; } return 'no-trigger'; })()`);
+    const ITEMS = `(() => [...document.querySelectorAll('.cr-model-selector__item')].map((el) => {
+      const r = el.getBoundingClientRect();
+      return { t: el.textContent.trim().replace(/\s+/g, ' ').slice(0, 40), vis: r.width > 10 && r.height > 6 };
+    }).filter((x) => x.vis).map((x) => x.t))()`;
+    let menu = [];
+    for (let i = 0; i < 10; i++) {
+      await sleep(120);
+      menu = (await c.ev(ITEMS)) || [];
+      if (menu.length) break;
+    }
+    try { await c.call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }); } catch { }
+    if (!menu.length) return { ok: false, current, reason: '点了 trigger 但菜单没弹出' };
+    return { ok: true, current, models: menu };
+  } catch (e) {
+    return { ok: false, reason: (e && e.message) || String(e) };
+  } finally {
+    try { if (c) c.close(); } catch { }
+  }
 }

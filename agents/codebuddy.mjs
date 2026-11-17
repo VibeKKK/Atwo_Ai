@@ -7,7 +7,7 @@
 // 入口变更史（2026-11-13）：
 //   · WorkBuddy 内置的 cli/dist/codebuddy-lite-wb.mjs 是 lite/headless 构建 ——
 //     没有 TUI、没有登录页，doctor/ps 路由被裁掉，永远拿不到凭据，弃用
-//   · 改用官方 npm 包解压版：C:\Users\kkk\Tools\codebuddy-cli\package
+//   · 改用官方 npm 包解压版：<用户目录>\Tools\codebuddy-cli\package
 //     下载源用 cdn.npmmirror.com（npmjs 直连被限速到 0.3MB/分钟）
 //
 // 前置：已登录（凭据在 ~/.codebuddy/app，2026-11-13 00:44 通过 --serve Web UI 完成）。
