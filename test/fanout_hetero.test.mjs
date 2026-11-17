@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pickReviewLaneDetail, pickReviewLane, runFanout } from '../lib/fanout-run.mjs';
+import { reviewTimeoutFor } from '../lib/fanout-run.mjs';
 import { laneReady } from '../lib/lanes.mjs';
 
 let pass = 0, fail = 0;
@@ -68,13 +69,16 @@ await ta('显式 --review-lane 指向不存在的通道 → 抛，不许悄悄�
     /没有这个通道|no-such-lane/,
   );
 });
-await ta('静态推测挑中 GUI 通道 → 只等 90s，不等满 300s 地板', async () => {
+await ta('静态推测挑中 GUI 通道 → 只等 90s（不是 180s，也不是 300s 地板）', async () => {
   // 2026-11-18 实测：trae 当父审 340s 才回「界面占位文案」。没有实测记录时不该押 5 分钟。
   assert.strictEqual(laneReady('deepseek'), false, 'HTTP 通道没有 Read 工具，不能当父审');
   assert.strictEqual(laneReady('ollama'), false, '8B 会编引文');
-  const src = fs.readFileSync(new URL('../lib/fanout-run.mjs', import.meta.url), 'utf8');
-  assert.ok(/reviewSource === 'static' \? Math\.min\(guiReviewFloor/.test(src), '静态选择必须有短墙');
-  assert.ok(/ATWO_STATIC_REVIEW_TIMEOUT_MS/.test(src), '短墙要能被环境变量覆盖');
+  // 2026-11-18 踩过：产物写「只等 90s」，实际因为 Math.max(timeoutMs=180000, 90000) 还是 180s，
+  // 整跑 205s 才退回自审 —— 产物里写假话比没有墙更糟。所以这层逻辑必须是可单测的纯函数。
+  assert.strictEqual(reviewTimeoutFor({ lane: 'trae', source: 'static', timeoutMs: 180000 }), 90000, '静态 GUI 只等 90s');
+  assert.strictEqual(reviewTimeoutFor({ lane: 'trae', source: 'ledger', timeoutMs: 180000 }), 300000, '台账验过的 GUI 给 300s 地板');
+  assert.strictEqual(reviewTimeoutFor({ lane: 'codebuddy', source: null, timeoutMs: 180000 }), 180000, 'CLI 通道不受 GUI 地板影响');
+  assert.strictEqual(reviewTimeoutFor({ lane: 'trae', source: 'static', timeoutMs: 180000, staticCapMs: 45000 }), 45000, '短墙可被环境变量覆盖');
 });
 
 await ta('通道把失败原因放在 error 字段（不是 err）→ 退回原因也要能读', async () => {
