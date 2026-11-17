@@ -43,7 +43,7 @@ import { VERBS, GLOBAL_FLAGS, EXIT_CODES, LIMITS, isHelp, checkFlags, positional
 import { detectEnvironment, quickSelfCheck } from './lib/bootstrap.mjs';
 import { probeReviewers, formatProbes } from './lib/reviewer-probe.mjs';
 import { shouldDelegate, formatShould } from './lib/should.mjs';
-import { runGate, formatGate } from './lib/gate.mjs';
+import { runGate, formatGate, formatGateBrief, acceptTargets } from './lib/gate.mjs';
 import { judgeOutcome, formatOutcome, exitForOutcome, judgeStall, pruneLanes } from './lib/outcome.mjs';
 import { pitfallRecord, appendPitfall, readPitfalls, matchPitfalls, renderPitfalls } from './lib/pitfalls.mjs';
 import { scoreRecord, appendScore, readScore, summarizeScores, dailyTrend, delta } from './lib/score.mjs';
@@ -1243,25 +1243,17 @@ function cmdDone(args) {
     console.log('── 验收与回归 ──');
     console.log('  ⚠ ATWO_DONE_SKIP_REGRESSION=1：本次只验状态机，不跑全量回归（自测专用）');
   } else {
-    const files = Array.isArray(t.relatedFiles) ? t.relatedFiles.filter((f) => f && fs.existsSync(path.resolve(HERE, f))) : [];
-    if (files.length) {
-      console.log('── 交付物验收 ──');
-      for (const f of files) {
-        const r = sh(process.execPath, [ACCEPT, f], { cwd: HERE, capture: true });
-        console.log((r.code === 0 ? '  ✓ ' : '  ✗ ') + f);
-        if (r.code !== 0) {
-          console.log('');
-          return die(['交付物没通过验收：' + f, '', (r.out || r.err || '').trim().slice(0, 800), '',
-            '改完再来：atwo done', '确实要硬结：atwo done --force（会留下明确标记）'].join('\n'), EXIT.accept);
-        }
-      }
-    }
+    // 五层验收交给 gate 的 accept 步，done 自己不再跑一遍：
+    // 以前这里逐文件跑 accept、gate 那步传的却是空 files —— 于是「任务声明了 relatedFiles 才验、没声明就一步不验」，
+    // 而 task.json 的 relatedFiles 常年为空，等于收工时验收从来没跑过。谁该被验由 acceptTargets 判。
+    const targets = acceptTargets({ cwd: HERE, relatedFiles: t.relatedFiles });
+    if (targets.length) console.log('── 交付物验收（' + targets.length + ' 个）──');
     // 回归走 gate（闭包 + 语法 + 契约 + 全量测试），不是只跑 test/*.test.mjs。
     // 只跑测试会漏两类致命情况：import 了不存在的文件、契约阈值被写死在代码里 ——
     // 这两种都能让测试全绿而线上全错。
     console.log('── 回归闸门（gate）──');
-    const g = runGate({ cwd: HERE, files: [], skipTests: false });
-    console.log(formatGate(g));
+    const g = runGate({ cwd: HERE, files: targets, skipTests: false });
+    console.log(formatGateBrief(g));
     if (!g.ok) {
       const red = g.steps.filter((s) => !s.ok);
       console.log('');

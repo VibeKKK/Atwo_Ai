@@ -83,7 +83,7 @@ const run2 = spawnSync(process.execPath, ['atwo.mjs', 'done', '--task', taskDir2
   env: { ...process.env, ATWO_GATE_NESTED: '1' },
 });
 const out2 = (run2.stdout || '') + (run2.stderr || '');
-ok('done 的回归走 gate（不是只跑测试文件）', /回归闸门（gate）/.test(out2) && /closure/.test(out2), out2.slice(0, 400));
+ok('done 的回归走 gate（不是只跑测试文件）', /回归闸门（gate）/.test(out2) && /九步全绿/.test(out2), out2.slice(0, 400));
 ok('gate 全绿时 done 退出码 0', run2.status === 0, 'status=' + run2.status + ' ' + out2.slice(0, 400));
 fs.rmSync(taskDir2, { recursive: true, force: true });
 ok('第二个临时任务已清理', !fs.existsSync(taskDir2));
