@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pickReviewLaneDetail, pickReviewLane, runFanout } from '../lib/fanout-run.mjs';
+import { laneReady } from '../lib/lanes.mjs';
 
 let pass = 0, fail = 0;
 async function ta(name, fn) { try { await fn(); pass += 1; console.log('  ✓ ' + name); } catch (e) { fail += 1; console.log('  ✗ ' + name + ' — ' + ((e && e.message) || e)); } }
@@ -67,6 +68,15 @@ await ta('显式 --review-lane 指向不存在的通道 → 抛，不许悄悄�
     /没有这个通道|no-such-lane/,
   );
 });
+await ta('静态推测挑中 GUI 通道 → 只等 90s，不等满 300s 地板', async () => {
+  // 2026-11-18 实测：trae 当父审 340s 才回「界面占位文案」。没有实测记录时不该押 5 分钟。
+  assert.strictEqual(laneReady('deepseek'), false, 'HTTP 通道没有 Read 工具，不能当父审');
+  assert.strictEqual(laneReady('ollama'), false, '8B 会编引文');
+  const src = fs.readFileSync(new URL('../lib/fanout-run.mjs', import.meta.url), 'utf8');
+  assert.ok(/reviewSource === 'static' \? Math\.min\(guiReviewFloor/.test(src), '静态选择必须有短墙');
+  assert.ok(/ATWO_STATIC_REVIEW_TIMEOUT_MS/.test(src), '短墙要能被环境变量覆盖');
+});
+
 await ta('通道把失败原因放在 error 字段（不是 err）→ 退回原因也要能读', async () => {
   // 2026-11-18 实测：codex 明明回了「codex CLI 不存在：…」/「app-server 初始化被拒（os error 5）」，
   // 产物里却只写「通道返回 ok:false 且没给 err」—— 排障时等于什么都没说。
