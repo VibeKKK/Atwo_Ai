@@ -41,7 +41,10 @@ const fakeAsk = async (prompt, opts = {}) => { seenTools.push(opts.tools); retur
 {
   const src = fs.readFileSync(path.join(root, 'lib', 'fanout-run.mjs'), 'utf8');
   ok(/export const READ_ONLY_TOOLS = 'Read,Grep,Glob'/.test(src), '4a READ_ONLY_TOOLS 常量存在且为 Read,Grep,Glob');
-  ok(/childTools = READ_ONLY_TOOLS/.test(src), '4b runFanout 的默认值来自该常量');
+  // 2026-11-17：默认值分成两条路 —— 不开执行面时仍是只读三件套；开 --allow-run 才给 Bash。
+  ok(/childTools = opts\.childTools \|\| \(allowRun \? RUN_TOOLS : READ_ONLY_TOOLS\)/.test(src), '4b 默认值：不开执行面时是 READ_ONLY_TOOLS');
+  ok(/export const RUN_TOOLS = 'Read,Grep,Glob,Bash'/.test(src), '4b2 开执行面时给 Bash，但只多这一个');
+  ok(!/childTools = RUN_TOOLS/.test(src), '4b3 Bash 不许成为无条件默认（写文件/执行必须显式开）');
   ok(/tools: childTools/.test(src), '4c 子会话调用真的把 tools 传下去了');
 }
 
