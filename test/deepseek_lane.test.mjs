@@ -9,6 +9,11 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { askDeepSeek, hasKey, probeDeepSeek } from '../agents/deepseek.mjs';
 
+// 这个文件桩掉了 fetch，压根不会打网络 —— 所以不受 DEEPSEEK_DISABLE 影响。
+// （全量跑时外层会设 DEEPSEEK_DISABLE=1 防止别的测试真联网，这里要显式关掉它）
+delete process.env.DEEPSEEK_DISABLE;
+if (!process.env.DEEPSEEK_API_KEY) process.env.DEEPSEEK_API_KEY = 'test-key-not-real';
+
 const realFetch = globalThis.fetch;
 function stubFetch(handler) {
   globalThis.fetch = async (url, init = {}) => handler(url, init);

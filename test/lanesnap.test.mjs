@@ -17,7 +17,7 @@ const rec = (agent, okFlag, ms) => JSON.stringify({ kind: 'quota', time: new Dat
 const lines = [
   rec('codebuddy', true, 1000),
   rec('codebuddy', true, 3000),
-  rec('codebuddy', false, 0),
+  rec('codebuddy', false, 1800),
   rec('trae', false, 45000),
   rec('doubao', false, 46000),
   'this is not json',
@@ -35,7 +35,7 @@ const cb = snap.lanes.find((l) => l.lane === 'codebuddy');
 ok(cb.samples === 3, 'codebuddy 样本数 = 3', String(cb.samples));
 ok(cb.ok === 2 && cb.fail === 1, 'codebuddy 成功/失败 = 2/1', `${cb.ok}/${cb.fail}`);
 ok(cb.rate === 0.67, 'codebuddy 成功率四舍五入到 0.67', String(cb.rate));
-ok(cb.avgMs === 2000, '平均耗时只算有耗时的记录（1000+3000)/2', String(cb.avgMs));
+ok(cb.avgMs === 1933, '平均耗时按真跑过的记录算（1000+3000+1800)/3 —— 失败但要真花了时间的也计入', String(cb.avgMs));
 
 const tr = snap.lanes.find((l) => l.lane === 'trae');
 ok(tr.ok === 0 && tr.rate === 0, 'trae 全失败 → rate 0');
@@ -58,6 +58,21 @@ const text = renderLanes(snap);
 ok(/通道快照/.test(text), '打印行有标题');
 ok(/codebuddy/.test(text) && /67%/.test(text), '打印行含通道名与成功率');
 ok(text.split('\n').length === 1 + snap.lanes.length, '一行一个通道');
+
+// 0 秒失败是「压根没发出去」（参数配错/端口不通），不许混进成功率分母
+const zeroDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lanesnap-zero-'));
+fs.mkdirSync(path.join(zeroDir, 'memory'), { recursive: true });
+fs.writeFileSync(path.join(zeroDir, 'memory', 'log.jsonl'), [
+  rec('codebuddy', true, 2000),
+  rec('codebuddy', false, 0),
+  rec('codebuddy', false, 0),
+  rec('codebuddy', false, 1500),
+].join(String.fromCharCode(10)) + String.fromCharCode(10), 'utf8');
+const z = lanesSnapshot({ cwd: zeroDir }).lanes.find((l) => l.lane === 'codebuddy');
+ok(z.samples === 4 && z.judged === 2, '0 秒失败不计入判定数（样本 4 / 判定 2）', `样本 ${z.samples} / 判定 ${z.judged}`);
+ok(z.zeroSecFail === 2, '0 秒失败单独计数 = 2', String(z.zeroSecFail));
+ok(z.rate === 0.5 && z.ok === 1 && z.fail === 1, '成功率只按真发出去的算 = 0.5', `${z.ok}/${z.judged} = ${z.rate}`);
+fs.rmSync(zeroDir, { recursive: true, force: true });
 
 // 文件不存在也不许抛
 const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'lanesnap-empty-'));

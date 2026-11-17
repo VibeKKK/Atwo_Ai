@@ -20,8 +20,6 @@ export const MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-flash';
 
 /** key 解析顺序：env → ~/.dsh/deepseek.key（仓库外）。找不到返回空串，绝不抛。 */
 export function loadKey() {
-  // 测试与离线场景：把这条通道整体关掉（否则跑测试会真的打网络、烧额度、还拖慢全量）。
-  if (process.env.DEEPSEEK_DISABLE === '1') return '';
   const env = String(process.env.DEEPSEEK_API_KEY || '').trim();
   if (env) return env;
   try {
@@ -39,6 +37,10 @@ export async function askDeepSeek(prompt, opts = {}) {
   if (!key) return { ok: false, error: '没有 DeepSeek key（env DEEPSEEK_API_KEY 或 ~/.dsh/deepseek.key）', err: '没有 DeepSeek key', addedText: '', elapsedMs: 0, model: opts.model || MODEL };
   const model = opts.model || MODEL;
   const timeoutMs = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : 120000;
+  // 离线/测试开关：只拦真调用，不拦「有没有 key」这个事实
+  if (process.env.DEEPSEEK_DISABLE === '1') {
+    return { ok: false, error: 'DEEPSEEK_DISABLE=1，跳过真调用', err: 'DEEPSEEK_DISABLE=1，跳过真调用', addedText: '', elapsedMs: 0, model };
+  }
   const t0 = Date.now();
   const messages = [];
   if (opts.system) messages.push({ role: 'system', content: String(opts.system) });
@@ -72,7 +74,7 @@ export async function askDeepSeek(prompt, opts = {}) {
     let text = content.trim();
     let degraded = false;
     if (!text && reasoning.trim()) { text = reasoning.trim(); degraded = true; }
-    return { ok: !!text, addedText: text, text, elapsedMs, model, finish, degraded, usage: j.usage || null, raw: j };
+    return { ok: true, addedText: text, text, elapsedMs, model, finish, degraded, usage: j.usage ? { in: Number(j.usage.prompt_tokens) || 0, out: Number(j.usage.completion_tokens) || 0 } : { in: 0, out: 0 } };
   } catch (e) {
     const elapsedMs = Date.now() - t0;
     const timedOut = /abort/i.test(String(e && e.name || '') + String(e && e.message || ''));

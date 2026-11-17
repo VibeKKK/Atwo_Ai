@@ -364,7 +364,7 @@ async function dispatch(kindLabel, rawPrompt, extra = {}) {
     const def = LANE_DEFS[name];
     if (def && typeof def.ask === 'function') {
       const r = await def.ask(rawPrompt, { timeoutMs: extra.timeoutMs, model: extra.model, system: extra.system, maxTurns: extra.maxTurns });
-      return { kind: name, ok: !!(r && r.ok), addedText: (r && (r.addedText || r.text)) || '', err: (r && (r.err || r.error)) || '', elapsedMs: (r && r.elapsedMs) || 0, model: (r && r.model) || '', viaDefinitions: true };
+      return { kind: name, ok: !!(r && r.ok), addedText: (r && (r.addedText || r.text)) || '', err: (r && (r.err || r.error)) || '', elapsedMs: (r && r.elapsedMs) || 0, model: (r && r.model) || '', usage: (r && r.usage) || { in: 0, out: 0 }, viaDefinitions: true };
     }
     throw new Error('未知 agent: ' + name);
   }
@@ -779,6 +779,7 @@ try {
     }
 
     console.log('[review] 产出者 ' + authorArg + ' → 候选 ' + candidates.join(' → ') + '（异源）');
+    const __rt0 = Date.now();  // rr.r.elapsedMs 不一定带回来（实测 deepseek 那份曾写成 0.2s）
     const rr = await reviewWithFallback({
       prompt: buildReviewPrompt(base, content, { author: authorArg }),
       summary: '评审 ' + base + ' by ' + (prefer || candidates[0]),
@@ -793,6 +794,7 @@ try {
       process.exit(3);
     }
     const r = rr.r;
+    const reviewMs = Number(r && r.elapsedMs) > 0 ? Number(r.elapsedMs) : (Date.now() - __rt0);
     const reviewer = rr.reviewer;
     const v = { verdict: rr.verdict, issues: rr.issues, weak: rr.weak };
 
@@ -802,7 +804,7 @@ try {
     // 试过并失败的要写进头部：否则后来人只看到「X 给的结论」，不知道前面挂了几个
     const failed = rr.tried.filter((t) => t !== reviewer);
     fs.writeFileSync(outFile,
-      `# ${reviewer} 评审：${base}\n\n- 时间：${new Date().toLocaleString('zh-CN')}\n- 产出者：${authorArg}\n- 耗时：${((r.elapsedMs || 0) / 1000).toFixed(1)}s\n- 裁决：${v.verdict || '未给出'}（问题 ${v.issues} 条）\n` +
+      `# ${reviewer} 评审：${base}\n\n- 时间：${new Date().toLocaleString('zh-CN')}\n- 产出者：${authorArg}\n- 耗时：${(reviewMs / 1000).toFixed(1)}s\n- 裁决：${v.verdict || '未给出'}（问题 ${v.issues} 条）\n` +
       (failed.length ? `- 试过并失败：${failed.join('、')}\n` : '') +
       `\n---\n\n${r.addedText || '(空)'}\n`, 'utf8');
     console.log(renderOut(r, r.contract, r.syntax));
