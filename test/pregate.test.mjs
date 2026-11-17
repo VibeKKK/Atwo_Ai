@@ -106,3 +106,33 @@ test('collectRefs 行号超出文件长度时明确报出来', () => {
   const r = collectRefs([{ answer: 'x', evidence: 'fake.mjs:999' }], { cwd: tmp });
   assert.match(r.missing[0], /行号超出文件长度/);
 });
+
+test('编造的行号必须判死（文件没那么长）', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pre-'));
+  fs.writeFileSync(path.join(tmp, 'a.mjs'), 'const A = 1;\nconst B = 2;\n');
+  const r = refMatchCheck({ id: 'c', answer: 'x', evidence: 'a.mjs:999 —— const A = 1;' }, { cwd: tmp });
+  assert.equal(r.verdict, PRE.revise);
+  assert.match(r.reason, /不存在的行/);
+});
+
+test('两处引用全部零重叠必须判死（原判据要 4 条才动）', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pre-'));
+  fs.writeFileSync(path.join(tmp, 'a.mjs'), 'export function alpha() { return 1 }\nexport function beta() { return 2 }\n');
+  const r = refMatchCheck({ id: 'c', answer: 'x', evidence: 'a.mjs:1 —— zzzz qqqq wwww\na.mjs:2 —— yyyy uuuu vvvv' }, { cwd: tmp });
+  assert.equal(r.verdict, PRE.revise);
+});
+
+test('同一行改数字必须判死（token 重叠抓不到，数字要对得上）', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pre-'));
+  fs.writeFileSync(path.join(tmp, 'a.mjs'), 'export const MAX_PARTS = 6;\n');
+  const r = refMatchCheck({ id: 'c', answer: 'x', evidence: 'a.mjs:1 —— export const MAX_PARTS = 99;' }, { cwd: tmp });
+  assert.equal(r.verdict, PRE.revise);
+  assert.match(r.reason, /数字对不上/);
+});
+
+test('逐字抄对的行必须放行（新规则不许误杀）', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pre-'));
+  fs.writeFileSync(path.join(tmp, 'a.mjs'), 'export const MAX_PARTS = 6;\n');
+  const r = refMatchCheck({ id: 'c', answer: 'x', evidence: 'a.mjs:1 —— export const MAX_PARTS = 6;' }, { cwd: tmp });
+  assert.equal(r.verdict, PRE.defer);
+});
