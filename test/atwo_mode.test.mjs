@@ -12,6 +12,18 @@ const MODE = path.join(HERE, '.atw', 'mode.json');
 const PRD = '.atw/tasks/_mode_fixture/prd.md';
 fs.mkdirSync(path.join(HERE, '.atw', 'tasks', '_mode_fixture'), { recursive: true });
 fs.copyFileSync(path.join(HERE, 'fixtures', 'tasks', 'mode_prd.md'), path.join(HERE, PRD));
+// strict 档的前置是「有一次进行中的任务」（atwo.mjs:372 activeTask → listTasks 只认
+// status 为 implement/accept 的 task.json）。只有 prd.md 没有 task.json 时 go 一律退 3，
+// A4/A5/A6/A8 全红 —— 干净 clone 里这是必然（本机是因为有真任务才绿）。
+const FIXTURE_TASK = path.join(HERE, '.atw', 'tasks', '_mode_fixture', 'task.json');
+fs.writeFileSync(FIXTURE_TASK, JSON.stringify({
+  id: '_mode_fixture',
+  title: 'mode 测试用任务（测试自建，用完即删）',
+  status: 'implement',
+  size: 'M',
+  createdAt: new Date().toISOString().slice(0, 10),
+  createdAtMs: Date.now() - 3600000,
+}, null, 2) + String.fromCharCode(10));
 const EMPTY = path.join(HERE, 'test', '_tmp_empty_tasks');
 
 const run = (args, extraEnv = {}) => {
@@ -120,6 +132,7 @@ ok('off 打印「流程已关闭」', /流程已关闭|off/.test(r.out));
 // 收尾：回到 strict，删掉临时空目录
 run(['mode', 'strict']);
 try { fs.rmdirSync(EMPTY); } catch { }
+try { fs.rmSync(path.join(HERE, '.atw', 'tasks', '_mode_fixture'), { recursive: true, force: true }); } catch { }
 
 console.log('');
 console.log(pass + ' 通过 / ' + fail + ' 失败');

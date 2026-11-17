@@ -53,14 +53,17 @@ ok('check 缺参数 → 非零（无任务 3=前置不满足 / 有任务 2=用�
   assert.ok([2, 3].includes(code), 'code=' + code);
 });
 
-ok('done 不带确认 → 退出码 2（不许不问就结）', () => {
-  assert.equal(run(['done']).code, 2);
+// 判据是「不许不问就结」，不是「必须正好 2」：有进行中任务时是 2（用法错），
+// 没有任务时是 3（前置不满足）—— 干净 clone 里后者才是常态（2026-11-17 干净检出实证）。
+ok('done 不带确认 → 非零（2=用法错 / 3=前置不满足，都不许 0 就结）', () => {
+  const code = run(['done']).code;
+  assert.ok([2, 3].includes(code), 'code=' + code);
 });
 
 ok('done --json 也遵守同一张码表', () => {
   const r = runJson(['done', '--json']);
-  assert.equal(r.code, 2);
-  assert.equal(r.json.exitCode, 2);
+  assert.ok([2, 3].includes(r.code), 'code=' + r.code);
+  assert.equal(r.json.exitCode, r.code);
   assert.equal(r.json.ok, false);
 });
 
