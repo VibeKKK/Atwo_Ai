@@ -63,3 +63,6 @@ lib/mode_badge.mjs
 lib/tier_probe.mjs
 lib/par_num4.mjs
 memory/log.codebuddy.js
+
+# 盲测跑出来的明细（每次都变，不是源码；manifest 与对照组产物要进库）
+eval/*-report.json

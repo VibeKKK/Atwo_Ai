@@ -30,6 +30,7 @@ import { makeReviewVerb } from './lib/review-cli.mjs';
 import { resolveAsk } from './lib/lanes.mjs';
 import { makeArmyVerb } from './lib/army-cli.mjs';
 import { makeTriageVerb } from './lib/triage-cli.mjs';
+import { makeBlindVerb } from './lib/blind-objective.mjs';
 import { installHooks, hookStatus, removeHooks, formatHookStatus, formatInstall } from './lib/hooks.mjs';
 import { VERBS, GLOBAL_FLAGS, EXIT_CODES, LIMITS, isHelp, checkFlags, positional, specOf, formatSpec, capsJson, valueFlagsOf } from './lib/cli-spec.mjs';
 import { detectEnvironment, quickSelfCheck } from './lib/bootstrap.mjs';
@@ -1573,6 +1574,7 @@ const cmdPool = makePoolVerb({ EXIT, RESULT, HERE, die });
 const cmdReview = makeReviewVerb({ EXIT, RESULT, HERE, die, resolveAsk });
 const cmdArmy = makeArmyVerb({ EXIT, RESULT, HERE, die, activeTask });
 const cmdTriage = makeTriageVerb({ EXIT, RESULT, HERE, die });
+const cmdBlind = makeBlindVerb({ EXIT, RESULT, HERE, die, resolveAsk });
 
 const bareCall = !process.argv[2];
 const verb = String(process.argv[2] || '__bare').toLowerCase();
@@ -1606,7 +1608,13 @@ function cmdModels(args = []) {
   });
 }
 
-const table = { doctor: cmdDoctor, queue: cmdQueue, cost: cmdCost, pool: cmdPool, review: cmdReview, should: cmdShould, gate: cmdGate, hooks: cmdHooks, try: cmdTry, new: cmdNew, batch: cmdBatch, go: cmdGo, check: cmdCheck, diff: cmdDiff, judge: cmdJudge, attest: cmdAttest, models: cmdModels, score: cmdScore, pitfall: cmdPitfall, army: cmdArmy, triage: cmdTriage, fanout: cmdFanout, done: cmdDone, state: cmdState, mode: cmdMode, raw: cmdRaw };
+function cmdSnapshot() {
+  const snap = lanesSnapshot({ cwd: HERE });
+  console.log(renderLanes(snap));
+  RESULT.data.snapshot = snap;
+  return EXIT.ok;
+}
+const table = { doctor: cmdDoctor, queue: cmdQueue, cost: cmdCost, pool: cmdPool, review: cmdReview, should: cmdShould, gate: cmdGate, hooks: cmdHooks, try: cmdTry, new: cmdNew, batch: cmdBatch, go: cmdGo, check: cmdCheck, diff: cmdDiff, judge: cmdJudge, attest: cmdAttest, models: cmdModels, snapshot: cmdSnapshot, score: cmdScore, pitfall: cmdPitfall, army: cmdArmy, triage: cmdTriage, blind: cmdBlind, fanout: cmdFanout, done: cmdDone, state: cmdState, mode: cmdMode, raw: cmdRaw };
 
 /** 打印规格：人读走 stdout，机器读塞进 RESULT.data（由统一收尾出 JSON）。 */
 function printSpec(target) {

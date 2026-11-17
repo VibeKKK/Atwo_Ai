@@ -81,3 +81,50 @@ test('makeReviewVerb 缺 --dir 走 usage，通道不可用走 channel', async ()
   const B = makeReviewVerb({ EXIT, RESULT: { data: null }, HERE: process.cwd(), die, resolveAsk: () => { throw new Error('这个通道没有'); } });
   await assert.rejects(() => B(['--dir', 'x']), (e) => e.code === EXIT.channel);
 });
+test('perCall：GUI 通道一份一送（workbuddy 送两份时 303 秒零回答）', async () => {
+  const d = mkDir(2);
+  let calls = 0;
+  const ask = async (prompt) => {
+    calls++;
+    const ids = (prompt.match(/child-\d+/g) || []).filter((v, i, a) => a.indexOf(v) === i);
+    assert.equal(ids.length, 1, 'perCall=1 时每次只该出现一份产物，实际 ' + ids.join(','));
+    return { text: JSON.stringify({ votes: [{ id: ids[0], verdict: 'PASS' }] }) };
+  };
+  const r = await reviewDir(d, { ask, cwd: process.cwd(), task: 't', perCall: 1 });
+  assert.equal(calls, 2);
+  assert.equal(r.votes.length, 2);
+  fs.rmSync(d, { recursive: true, force: true });
+});
+
+test('宽松解析：父审回散文不按 JSON 契约，也能捞到票', async () => {
+  const d = mkDir(2);
+  const ask = async () => ({ text: 'child-1：可以收，证据对得上。\nchild-2 退回，引用的行不存在。' });
+  const r = await reviewDir(d, { ask, cwd: process.cwd(), task: 't' });
+  const byId = Object.fromEntries(r.votes.map((v) => [v.id, v.verdict]));
+  assert.equal(byId['child-1'], 'PASS');
+  assert.equal(byId['child-2'], 'REVISE');
+  assert.equal(r.votes.every((v) => v.loose), true);
+  assert.match(r.rawText, /可以收/);
+  fs.rmSync(d, { recursive: true, force: true });
+});
+
+test('机械闸门已全判时不调父审，并且说清楚（不许伪装成「父审没回」）', async () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'atwo-rev-skip-'));
+  fs.writeFileSync(path.join(d, 'child-1.md'), 'ANSWER: 结论\nEVIDENCE:\n(空)\n', 'utf8');
+  let asked = 0;
+  const ask = async () => { asked++; return { text: '' }; };
+  const r = await reviewDir(d, { ask, cwd: process.cwd(), task: 't' });
+  assert.equal(r.skippedLlm, true);
+  assert.equal(asked, 0);
+  assert.equal(r.llmCount, 0);
+  fs.rmSync(d, { recursive: true, force: true });
+});
+
+test('父审抛错时把错误写进原文，不吞成空', async () => {
+  const d = mkDir(1);
+  const ask = async () => { throw new Error('等了 303 秒没拿到回答'); };
+  const r = await reviewDir(d, { ask, cwd: process.cwd(), task: 't' });
+  assert.match(r.rawText, /调用失败/);
+  assert.match(r.rawText, /303 秒/);
+  fs.rmSync(d, { recursive: true, force: true });
+});

@@ -1,0 +1,30 @@
+{
+  "contract": "atwo-blind/1",
+  "note": "对照组成立：引文逐字真实，用来量误杀",
+  "cases": [
+    {
+      "id": "clean-1",
+      "file": "eval/blind-clean/clean-1.md",
+      "label": "good",
+      "why": "对照组：引文从当前仓库逐字抄出"
+    },
+    {
+      "id": "clean-2",
+      "file": "eval/blind-clean/clean-2.md",
+      "label": "good",
+      "why": "对照组：引文从当前仓库逐字抄出"
+    },
+    {
+      "id": "clean-3",
+      "file": "eval/blind-clean/clean-3.md",
+      "label": "good",
+      "why": "对照组：引文从当前仓库逐字抄出"
+    },
+    {
+      "id": "clean-4",
+      "file": "eval/blind-clean/clean-4.md",
+      "label": "good",
+      "why": "对照组：引文从当前仓库逐字抄出"
+    }
+  ]
+}
