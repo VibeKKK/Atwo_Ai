@@ -103,3 +103,49 @@ ANSWER 却声称「这两处就是任务要求的实现入口与判据来源」�
 3. GUI 常回散文不给 JSON → `parseReviewLoose(text, ids)`，只在严格解析没有决定性票时启用，命中标 `loose:true`。
 
 `test/review_async.test.mjs` 10/10。
+
+## 五、workbuddy 后来真出票了：第四条真因 + 一条新判据（2026-11-17 15:40 实测）
+
+补完第四条真因之后 workbuddy 当父审第一次拿到**完整可解析的票**（输出节选）：
+
+```
+补审完成（workbuddy）· 机械 0 票 · 父审 2 票（原文 708 字已落盘 REVIEW-ASYNC-RAW.md）
+  child-1  REVISE —— 证据未能核对：实际读到 Read(lib/split.mjs) = File does not exist. …
+  child-2  REVISE —— 证据未能核对：实际 Read lib/pregate.mjs 返回 File does not exist. …
+```
+
+REVIEW-ASYNC-RAW.md 里是标准 JSON：`[{"id":"child-1","verdict":"REVISE","reason":"…"}]`
+
+### 第四条真因：把「过程状态」当成了答案
+
+WorkBuddy 在「思考 + 搜代码」阶段会把界面行当正文吐出来，实测两次都只有：
+
+```
+正在搜索代码 EXIT
+已消耗
+5.56
+我嘞个豆，这题有点东西
+```
+
+一处判定都没有。旧代码看到「文本停止变化 3.5 秒」就交卷 → parseReview 得 0 票 → 记成「父审弃权」。
+
+修法（`lib/lanes.mjs`）：
+- `looksStatusOnly(text)`：剥掉状态行（正在… / 已消耗 / 纯数字）后剩不到 12 字、且不含任何判定词（PASS/REVISE/通过/退回…）→ 判为过程状态。
+- 命中就**再给一次机会**，且这次把静默窗口从 3.5s 拉到 12s（`ATWO_LANE_SETTLE_MS`）—— GUI 的「思考停顿」比适配层默认值长得多。
+- 两次都只回过程状态 → ok:false 并如实说「通道只回了过程状态（…），没有给出结论」，不再伪装成弃权。
+- `INCOMPLETE_RE` 补 正在搜索|正在读取。
+
+`test/lanes_status.test.mjs` 8 条（含用上面那段真实原文做断言）。
+
+### 一条新判据：GUI 通道能投票 ≠ 能核引文
+
+两份 REVISE 的理由是「Read(lib/split.mjs) = File does not exist.、ls -la 仓库根仅有 . 与 ..、find 全树无任何文件」。
+它没撒谎 —— **GUI 通道的 Read/Grep 在它自己的工作区里跑，不在本仓库**。所以它对我们的「文件:行」一律读不到，
+只能靠提示里注入的原文做「文本自洽」判断。
+
+后果两条，都要记住：
+1. GUI 父审的 REVISE 如果理由是「文件不存在 / 目录是空的」，那是**核不了**，不是**产物错**。
+2. 核引文真实性只有两条路：CLI 通道（codebuddy，cwd=仓库）或机械闸门。
+
+已把这句话写进报告：`lib/review-cli.mjs` 在 GUI 通道时给 `REVIEW-ASYNC.md` 前置三行警示
+（「核不了 ≠ 产物错 / 要核引文用 codebuddy 或机械闸门」）。

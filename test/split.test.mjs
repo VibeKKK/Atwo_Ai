@@ -32,17 +32,22 @@ const ok = (c, m) => { if (c) { pass += 1; } else { fail += 1; console.log('  �
 
 // 4. 单元太少不切（启动税摊不回本）
 {
-  const p = planSplit('看 lib/split.mjs lib/gate.mjs lib/lanes.mjs', { cwd: root });
-  ok(p.chunks.length === 0 && p.reason === 'units<' + MIN_UNITS_TO_SPLIT, '4 三个单元 → 不切（' + p.reason + '）');
+  // 2026-11-17 语义变更（rank1 的 lib/split.mjs）：片数 = min(上限, 簇数)，簇按真 import 聚。
+  // 「单元数 < 4 不切」这条门槛已不再生效，改成「只有一簇就不切」。这一条守的就是它。
+  const p = planSplit('看 lib/split.mjs test/split.test.mjs', { cwd: root });
+  ok(p.chunks.length === 0 && p.reason === 'single-cluster', '4 实现与它的测试（同一簇）→ 不切（' + p.reason + '）');
 }
 
 // 5. 四个单元 → 2 片；每片 2 个
 {
   const p = planSplit('审计 lib/split.mjs lib/gate.mjs lib/lanes.mjs lib/pregate.mjs', { cwd: root });
-  ok(p.chunks.length === 2, '5 四单元切成 2 片，实得 ' + p.chunks.length);
-  ok(p.chunks.every((c) => c.units.length === 2), '5b 每片 2 个单元');
+  // 四个互不 import 的模块 = 四簇 → 四片（上限 DEFAULT_MAX_CHUNKS=4）
+  const want = Math.min(DEFAULT_MAX_CHUNKS, p.clusters.length);
+  ok(p.chunks.length === want, '5 片数 = min(上限, 簇数)：' + p.chunks.length + ' / 簇 ' + p.clusters.length);
+  ok(p.chunks.every((c) => c.units.length >= 1), '5b 没有空片');
   ok(p.units.length === 4, '5c 总单元数 4');
-  ok(describeSplit(p).includes('2 片'), '5d describeSplit 可读：' + describeSplit(p));
+  ok(p.strategy === 'clusters', '5d 用的是簇策略（' + p.strategy + '）');
+  ok(describeSplit(p).includes(p.chunks.length + ' 片'), '5e describeSplit 可读：' + describeSplit(p));
 }
 
 // 6. 上限：单元很多也不超过 maxChunks，默认上限是 DEFAULT_MAX_CHUNKS
@@ -61,7 +66,7 @@ const ok = (c, m) => { if (c) { pass += 1; } else { fail += 1; console.log('  �
 {
   const p = planSplit('审计 lib/split.mjs lib/gate.mjs lib/lanes.mjs lib/pregate.mjs', { cwd: root });
   const text = chunkTask('审计这四个文件', p.chunks[0]);
-  ok(text.includes('第 1 / 2 片'), '7a 带片号');
+  ok(text.includes('第 1 / ' + p.chunks.length + ' 片'), '7a 带片号');
   ok(p.chunks[0].units.every((u) => text.includes(u.unit)), '7b 本片清单逐条列出');
   ok(text.includes('不要越界'), '7c 有越界禁令');
   ok(!p.chunks[1].units.some((u) => text.split('不要越界')[0].includes(u.unit)), '7d 不列别片的单元');
@@ -84,10 +89,11 @@ const ok = (c, m) => { if (c) { pass += 1; } else { fail += 1; console.log('  �
     return { ok: true, addedText: 'ANSWER: 本片逐项看完。\nEVIDENCE: lib/split.mjs:5 「export const MIN_UNITS_PER_CHUNK = 2;」', elapsedMs: 1 };
   };
   const res = await runFanout({ task: '审计 lib/split.mjs lib/gate.mjs lib/lanes.mjs lib/pregate.mjs', split: true, cwd: root, ask, timeoutMs: 5000, noPreGate: true, reviewChunk: 0 });
-  ok(res.split && res.split.chunks === 2, '9 切 2 片，实得 ' + JSON.stringify(res.split));
-  ok(res.children.length === 2 && res.children.every((c) => c.chunkLabel), '9b 两份产物都带 chunkLabel');
+  const wantChunks = Math.min(DEFAULT_MAX_CHUNKS, (planSplit('审计 lib/split.mjs lib/gate.mjs lib/lanes.mjs lib/pregate.mjs', { cwd: root }).clusters || []).length);
+  ok(res.split && res.split.chunks === wantChunks, '9 切 ' + wantChunks + ' 片，实得 ' + JSON.stringify(res.split));
+  ok(res.children.length === wantChunks && res.children.every((c) => c.chunkLabel), '9b 每份产物都带 chunkLabel');
   ok(res.children.every((c) => seen.some((s) => s.prompt.includes(c.chunkLabel ? '第 ' : ''))), '9c 任务文本里带了片号');
-  ok(res.merged && res.merged.text.length > 20 && res.merged.parts === 2, '9d merged 拼装完成');
+  ok(res.merged && res.merged.text.length > 20 && res.merged.parts === wantChunks, '9d merged 拼装完成');
   ok(seen.filter((s) => s.tools === 'Read').length >= 1, '9e 父审仍然只读且被调用');
 }
 
