@@ -67,6 +67,17 @@ await ta('显式 --review-lane 指向不存在的通道 → 抛，不许悄悄�
     /没有这个通道|no-such-lane/,
   );
 });
+await ta('异源父审没给票 → 退回主力重审一次，并留痕（不许白等成 exit 5）', async () => {
+  // 2026-11-18 实测形态：父审是 trae，340s 后回「界面占位文案」，两片全 unreviewed，整跑退出 5。
+  // 退回自审至少能给出结论 —— 但必须在产物里说清「这次是自审，因为异源没给票」。
+  const placeholder = async () => ({ ok: true, addedText: '思考中' });
+  const r = await runFanout({ task: 't', parts: 2, lanes: ['codebuddy'], autoLanes: false, probes: PROBES, ask: childAsk, reviewAsk: placeholder, reviewLane: 'trae', preGate: false, reviewChunk: 0 });
+  assert.strictEqual(r.reviewLane, 'codebuddy', '退回后 reviewLane 必须是真实在用的那条');
+  assert.strictEqual(r.reviewWanted, 'trae', '原本那条异源要留着');
+  assert.ok(/没给票|占位|文案/.test(String(r.reviewFallback || '')), '退回原因要写清：' + r.reviewFallback);
+  assert.ok(Array.isArray(r.rounds) && r.rounds.some((x) => x.reviewFallbackFrom), '退回这件事要进 rounds 台账');
+});
+
 await ta('源码守卫：父审 ask 不许在不知道主力的情况下定下来', async () => {
   const src = fs.readFileSync(new URL('../lib/fanout-run.mjs', import.meta.url), 'utf8');
   assert.ok(!/opts\.reviewLane \? resolveAsk\(opts\.reviewLane\) : ask/.test(src), '旧写法：挑的是 A 通道、用的却是主力的 ask');
