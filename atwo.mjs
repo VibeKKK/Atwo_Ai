@@ -35,6 +35,7 @@ import { makeTriageVerb } from './lib/triage-cli.mjs';
 import { makeBlindVerb } from './lib/blind-objective.mjs';
 import { lanesSnapshot, renderLanes } from './lib/lanesnap.mjs';
 import { makeBoardVerb } from './lib/board-cli.mjs';
+import { makeTailVerb, makeStopVerb } from './lib/runs-cli.mjs';
 import { installHooks, hookStatus, removeHooks, formatHookStatus, formatInstall } from './lib/hooks.mjs';
 import { VERBS, GLOBAL_FLAGS, EXIT_CODES, LIMITS, isHelp, checkFlags, positional, specOf, formatSpec, capsJson, valueFlagsOf } from './lib/cli-spec.mjs';
 import { detectEnvironment, quickSelfCheck } from './lib/bootstrap.mjs';
@@ -1668,6 +1669,8 @@ function cmdModels(args = []) {
 }
 
 const cmdBoard = makeBoardVerb({ cwd: HERE, EXIT });
+const cmdTail = makeTailVerb({ cwd: HERE, EXIT });
+const cmdStop = makeStopVerb({ cwd: HERE, EXIT });
 
 function cmdSnapshot() {
   const snap = lanesSnapshot({ cwd: HERE });
@@ -1675,7 +1678,7 @@ function cmdSnapshot() {
   RESULT.data.snapshot = snap;
   return EXIT.ok;
 }
-const table = { doctor: cmdDoctor, queue: cmdQueue, cost: cmdCost, pool: cmdPool, review: cmdReview, should: cmdShould, gate: cmdGate, hooks: cmdHooks, try: cmdTry, new: cmdNew, batch: cmdBatch, go: cmdGo, check: cmdCheck, diff: cmdDiff, judge: cmdJudge, attest: cmdAttest, models: cmdModels, snapshot: cmdSnapshot, board: cmdBoard, score: cmdScore, pitfall: cmdPitfall, army: cmdArmy, triage: cmdTriage, blind: cmdBlind, fanout: cmdFanout, done: cmdDone, state: cmdState, mode: cmdMode, raw: cmdRaw };
+const table = { doctor: cmdDoctor, queue: cmdQueue, cost: cmdCost, pool: cmdPool, review: cmdReview, should: cmdShould, gate: cmdGate, hooks: cmdHooks, try: cmdTry, new: cmdNew, batch: cmdBatch, go: cmdGo, check: cmdCheck, diff: cmdDiff, judge: cmdJudge, attest: cmdAttest, models: cmdModels, snapshot: cmdSnapshot, board: cmdBoard, tail: cmdTail, stop: cmdStop, score: cmdScore, pitfall: cmdPitfall, army: cmdArmy, triage: cmdTriage, blind: cmdBlind, fanout: cmdFanout, done: cmdDone, state: cmdState, mode: cmdMode, raw: cmdRaw };
 
 /** 打印规格：人读走 stdout，机器读塞进 RESULT.data（由统一收尾出 JSON）。 */
 function printSpec(target) {
@@ -1754,7 +1757,9 @@ if (verb === 'caps' || verb === 'spec' || verb === 'capabilities') {
       if (args) {
         // await 不能省：cmdDiff 是 async，不 await 的话 code 是 Promise，
         // process.exit 会抛 ERR_INVALID_ARG_TYPE —— 而且是在输出全部打完之后才崩。
-        code = await table[verb](args);
+        // RESULT 必须传下去：动词里写的 RESULT.data.x 只有挂到外层那个对象上，
+        // --json 才拿得到；只传 args 时动词拿到的是自己新建的默认对象，写完就丢（2026-11-17 实测）。
+        code = await table[verb](args, RESULT);
       }
     }
   }
