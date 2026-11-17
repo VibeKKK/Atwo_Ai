@@ -649,7 +649,18 @@ async function cmdGo(args) {
   const tier = tierFor(mode.name, size);
 
   // R6：这三行是用户唯一能核对「花了多少、开了几道闸」的地方，必须与 argv 完全一致
-  console.log('▶ 任务：' + (t ? t.title : '（无任务记录 · 流程已关闭）'));
+  // PRD_TITLE_MARK：命令行给的 PRD 才是「这次派的是什么」；activeTask 只说明账本在谁手上
+  const prdTitle = (() => {
+    try {
+      const f = src && src[0] ? String(src[0]) : '';
+      if (!f || !fs.existsSync(f)) return '';
+      const lines = fs.readFileSync(f, 'utf8').split(/\r?\n/);
+      const head = lines.find((l) => /^#\s+/.test(l));
+      return head ? head.replace(/^#\s+/, '').trim().slice(0, 80) : '';
+    } catch { return ''; }
+  })();
+  console.log('▶ 任务：' + (prdTitle || (t ? t.title : '（无任务记录 · 流程已关闭）')));
+  if (prdTitle && t && t.title && t.title !== prdTitle) console.log('▶ 账本任务：' + t.title);
   console.log('▶ 档位：' + mode.name + (mode.name === 'strict' ? ' · ' + size : '') + ' · ' + mode.label);
   console.log('▶ 本次：' + lanes.length + ' 路（' + lanes.join(', ') + '）· 验收五层 · '
     + (plan.review > 0 ? '评审 ' + plan.review + ' 个' : '不评')
