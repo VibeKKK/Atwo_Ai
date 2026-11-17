@@ -59,9 +59,17 @@ const probeMd = path.join(ROOT, '_probe', 'decisions.md');
 const backup = new Map();
 for (const p of [probeJson, probeMd]) if (fs.existsSync(p)) backup.set(p, fs.readFileSync(p));
 
+// 人话版默认进 docs/decisions/（那是要进 git 的目录）—— 跑测必须自己收拾干净，
+// 否则一次全量跑就往仓库里塞一个 adhoc-<日期>.md（2026-11-18 干净检出抓到的真污染）。
+const humanDir = path.join(ROOT, 'docs', 'decisions');
+const humanBefore = new Set(fs.existsSync(humanDir) ? fs.readdirSync(humanDir) : []);
 const r2 = spawnSync(process.execPath, [ATWO, 'diff', FIX], { cwd: ROOT, encoding: 'utf8' });
 ok('不给 --out 时也成功', r2.status === 0, r2.status);
 ok('不给 --out 时默认落 _probe', /_probe\/decisions\.(json|md)/.test(r2.stdout || ''), (r2.stdout || '').slice(-200));
+ok('人话版默认进 docs/decisions（要进 git 的东西不能只停在屏幕上）', /docs[\/\\]decisions[\/\\]/.test(r2.stdout || ''), (r2.stdout || '').slice(-200));
+for (const f of (fs.existsSync(humanDir) ? fs.readdirSync(humanDir) : [])) {
+  if (!humanBefore.has(f)) fs.rmSync(path.join(humanDir, f), { force: true });
+}
 
 for (const p of [probeJson, probeMd]) {
   if (backup.has(p)) fs.writeFileSync(p, backup.get(p));
