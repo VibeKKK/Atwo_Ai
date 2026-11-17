@@ -29,7 +29,7 @@ import { makeQueueVerb } from './lib/queue-cli.mjs';
 import { makeCostVerb } from './lib/cost-cli.mjs';
 import { makePoolVerb } from './lib/pool-cli.mjs';
 import { makeReviewVerb } from './lib/review-cli.mjs';
-import { resolveAsk } from './lib/lanes.mjs';
+import { resolveAsk, laneIds } from './lib/lanes.mjs';
 import { makeArmyVerb } from './lib/army-cli.mjs';
 import { makeTriageVerb } from './lib/triage-cli.mjs';
 import { makeBlindVerb } from './lib/blind-objective.mjs';
@@ -495,6 +495,9 @@ const ALL_LANES = ['codebuddy', 'trae', 'workbuddy', 'doubao'];
 // GUI 三通道要先点界面、再等首字节，空产出与 300s 超时是常态（见 memory/log.jsonl）。
 // 想要多视角就升档（--size L / crazy），别在 S/M 上白烧。
 const FAST_LANES = ['codebuddy'];
+// --agent 的合法值取编队表（含 deepseek/ollama/codex），与档位计划的 ALL_LANES 分开：
+// 档位不该把已知跑不起来的 codex 也算进去，但人显式点名时不该被挡住。
+const KNOWN_LANES = laneIds();
 const DEFAULT_TIMEOUTS = {
   ORCH_TIMEOUT_TRAE: 120000,
   ORCH_TIMEOUT_DOUBAO: 120000,
@@ -572,9 +575,9 @@ async function cmdGo(args) {
   }
   if (agentRaw) {
     const picked = String(agentRaw).split(',').map((x) => x.trim()).filter(Boolean);
-    const bad = picked.filter((x) => !ALL_LANES.includes(x));
-    if (bad.length) return die('--agent 只支持 ' + ALL_LANES.join(' / ') + '（收到 ' + bad.join(',') + '）');
-    if (!picked.length) return die('--agent 后面要写通道名：' + ALL_LANES.join(' / '));
+    const bad = picked.filter((x) => !KNOWN_LANES.includes(x));
+    if (bad.length) return die('--agent 只支持 ' + KNOWN_LANES.join(' / ') + '（收到 ' + bad.join(',') + '）');
+    if (!picked.length) return die('--agent 后面要写通道名：' + KNOWN_LANES.join(' / '));
     lanes = picked;
   }
 
