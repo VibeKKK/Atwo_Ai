@@ -67,6 +67,15 @@ await ta('显式 --review-lane 指向不存在的通道 → 抛，不许悄悄�
     /没有这个通道|no-such-lane/,
   );
 });
+await ta('通道把失败原因放在 error 字段（不是 err）→ 退回原因也要能读', async () => {
+  // 2026-11-18 实测：codex 明明回了「codex CLI 不存在：…」/「app-server 初始化被拒（os error 5）」，
+  // 产物里却只写「通道返回 ok:false 且没给 err」—— 排障时等于什么都没说。
+  const errInError = async () => ({ ok: false, error: 'app-server 初始化被拒（os error 5）', addedText: '' });
+  const r = await runFanout({ task: 't', parts: 2, lanes: ['codebuddy'], autoLanes: false, probes: PROBES, ask: childAsk, reviewAsk: errInError, reviewLane: 'trae', preGate: false, reviewChunk: 0 });
+  assert.ok(/os error 5|app-server/.test(String(r.reviewFallback || '')), '真实原因要进 reviewFallback：' + r.reviewFallback);
+  assert.ok(!/没给 err/.test(String(r.reviewFallback || '')), '有 error 字段就不许说「没给 err」');
+});
+
 await ta('台账空（陌生人的干净 clone）也要异源：静态推测一条不同于主力的，并标明依据', async () => {
   // 2026-11-18 干净检出实测：没有 memory/reviewer-ledger.jsonl，旧代码直接返回 'codebuddy'，
   // 而主力也是 codebuddy → reviewWanted=codebuddy、homogeneous=true，父审只能自审。
