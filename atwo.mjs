@@ -23,6 +23,7 @@ import { summarize } from './lib/report.mjs';
 import { quotaRecord, appendQuota } from './lib/quota-log.mjs';
 import { selfLanded, detectTarget } from './lib/land.mjs';
 import { makeFanoutVerb } from './lib/fanout-cli.mjs';
+import { makeQueueVerb } from './lib/queue-cli.mjs';
 import { makeArmyVerb } from './lib/army-cli.mjs';
 import { makeTriageVerb } from './lib/triage-cli.mjs';
 import { installHooks, hookStatus, removeHooks, formatHookStatus, formatInstall } from './lib/hooks.mjs';
@@ -31,7 +32,7 @@ import { detectEnvironment, quickSelfCheck } from './lib/bootstrap.mjs';
 import { probeReviewers, formatProbes } from './lib/reviewer-probe.mjs';
 import { shouldDelegate, formatShould } from './lib/should.mjs';
 import { runGate, formatGate } from './lib/gate.mjs';
-import { judgeOutcome, formatOutcome, exitForOutcome, judgeStall } from './lib/outcome.mjs';
+import { judgeOutcome, formatOutcome, exitForOutcome, judgeStall, pruneLanes } from './lib/outcome.mjs';
 import { pitfallRecord, appendPitfall, readPitfalls, matchPitfalls, renderPitfalls } from './lib/pitfalls.mjs';
 import { scoreRecord, appendScore, readScore, summarizeScores, dailyTrend, delta } from './lib/score.mjs';
 
@@ -160,7 +161,12 @@ function orchestraSupervised(argv, opts = {}) {
           process.stdout.write('\n' + progressLine({ elapsedMs: Date.now() - startedAt, text: '⏳ ' + st.text }) + '\n');
         }
       }
-      const hard = Number(process.env.ATWO_STALL_ABORT_MS) || 0;
+      // 2026-11-17 改默认：从「只在显式设了才掐」变成「默认 60 秒掐」。
+      // 60 秒是因为 codebuddy 是 CLI 子进程（首 token 要 20–40 秒），
+      // 设成 30 秒会把整批在它开口之前就掐掉 —— 实测踩过一次。
+      // 想退回旧行为写 ATWO_STALL_ABORT_MS=0。
+      const hardEnv = process.env.ATWO_STALL_ABORT_MS;
+      const hard = hardEnv === undefined ? 60000 : Number(hardEnv) || 0;
       if (hard > 0 && st.idleMs >= hard) {
         aborted = true;
         abortReason = '卡住 ' + Math.round(st.idleMs / 1000) + 's 没有新输出';
@@ -545,6 +551,25 @@ async function cmdGo(args) {
     lanes = picked;
   }
 
+  // 通道裁剪（2026-11-17）：账本里「近期有样本且 0 成功」的路，本轮不派。
+  // 依据：今天四路征求看法时两路恒死，白占时间额度；人不会记得改 --agent，让账本来决定。
+  // 只砍有样本的 0 成功率，不动没样本的；全砍光时照原样派（那说明账本坏了）。
+  if (lanes.length > 1 && !rest1.includes('--force-lanes')) {
+    try {
+      const ledgerRows = fs.readFileSync(LOG, 'utf8')
+        .split('\n')
+        .filter((l) => l.trim())
+        .map((l) => { try { return JSON.parse(l); } catch { return null; } })
+        .filter(Boolean);
+      const pr = pruneLanes(ledgerRows, lanes);
+      if (pr.dropped.length) {
+        console.log('▶ 通道裁剪：' + pr.dropped.map((d) => d.lane + ' 近 ' + d.samples + ' 次 0% 成功').join(' · ')
+          + '（--force-lanes 可强留）');
+        lanes = pr.kept;
+      }
+    } catch { /* 账本读不到就照常派活，别让记账问题拦了干活 */ }
+  }
+
   const env = {};
   // 2026-11-16 修：超时基线必须无条件下发。以前只在 crazy 档里注入，
   // 于是 strict / S / off 档 ORCH_TIMEOUT_CODEBUDDY=300000 从没到达 orchestra 子进程，
@@ -591,6 +616,19 @@ async function cmdGo(args) {
     .join(' · ')
     + (mode.name === 'crazy' ? '（crazy 已 ×1.5）' : ''));
 
+  // 快速失败单独一行：这是「死一路要等多久」的口径，和整体超时不是一回事。
+  {
+    const ttfbEnv = process.env.ATWO_TTFB_MS;
+    const hardEnv2 = process.env.ATWO_STALL_ABORT_MS;
+    const hardMs = hardEnv2 === undefined ? 60000 : Number(hardEnv2) || 0;
+    const who = ttfbEnv === undefined
+      ? 'GUI 通道 15s / codebuddy 45s'
+      : (Number(ttfbEnv) ? '全部 ' + Math.round(Number(ttfbEnv) / 1000) + 's' : '不判');
+    console.log('▶ 快速失败：' + who + ' 没出第一个字就判死并换路'
+      + (ttfbEnv === undefined ? '' : '（ATWO_TTFB_MS=' + ttfbEnv + ' 覆盖中）')
+      + ' · 整批 ' + (hardMs ? Math.round(hardMs / 1000) + 's 全静默就收尾' : '不掐（ATWO_STALL_ABORT_MS=0）'));
+  }
+
   if (planOnly) {
     console.log(renderTierLine(tier));
     console.log('');
@@ -601,8 +639,18 @@ async function cmdGo(args) {
   }
 
   // 真跑才切。plan 模式上面已经 return，界面一个像素都不动。
+  // 派活前先问一遍菜单（用户 2026-11-17 批准：全部搞成自动检查模型）。
+  // 读菜单 1~2 秒，比失败一次 45 秒便宜；读不到就跳过，不阻断派活。
+  let live = null;
+  if (!rest1.includes('--no-menu-check')) {
+    const { verifyModels, renderVerifyLine } = await import('./lib/models.mjs');
+    live = await verifyModels(tier, { agents: lanes, max: tier === 'strong' ? Infinity : undefined });
+    console.log(renderVerifyLine(live));
+    for (const b of live.blocked) console.log('  · ' + b.agent + ' 的 ' + b.model + ' 已不在菜单里，记入不可用名单');
+  }
   const mt = await applyTier(tier, {
     agents: lanes,
+    override: live && Object.keys(live.chosen).length ? live.chosen : undefined,
     switchModel: async (agent, model) => {
       const m = await import('./agents/' + agent + '.mjs');
       if (typeof m.setModel !== 'function') return { ok: false, reason: '适配层还没有 setModel' };
@@ -1500,13 +1548,43 @@ if (JSON_MODE) {
 }
 
 const cmdFanout = makeFanoutVerb({ EXIT, RESULT, HERE, die, activeTask });
+const cmdQueue = makeQueueVerb({ EXIT, RESULT, HERE, die });
 const cmdArmy = makeArmyVerb({ EXIT, RESULT, HERE, die, activeTask });
 const cmdTriage = makeTriageVerb({ EXIT, RESULT, HERE, die });
 
 const bareCall = !process.argv[2];
 const verb = String(process.argv[2] || '__bare').toLowerCase();
 const rest = process.argv.slice(3).filter((a) => a !== '--json');
-const table = { doctor: cmdDoctor, should: cmdShould, gate: cmdGate, hooks: cmdHooks, try: cmdTry, new: cmdNew, batch: cmdBatch, go: cmdGo, check: cmdCheck, diff: cmdDiff, judge: cmdJudge, attest: cmdAttest, score: cmdScore, pitfall: cmdPitfall, army: cmdArmy, triage: cmdTriage, fanout: cmdFanout, done: cmdDone, state: cmdState, mode: cmdMode, raw: cmdRaw };
+/**
+ * 看/清模型不可用名单（`atwo models`）。
+ * 为什么把它做成动词：名单是我替你记的，但删必须你自己能把关 ——
+ * 「这个模型今天不能用」是现实，不是永久判决，12 小时后自动过期，也可以立刻清。
+ */
+function cmdModels(args = []) {
+  const a = args.filter((x) => x !== '--json');
+  const json = a.length !== args.length;
+  const wantClear = a[0] === 'clear' || a.includes('--clear');
+  const rest = a.filter((x) => x !== 'clear' && x !== '--clear');
+  return import('./lib/models.mjs').then((M) => {
+    if (wantClear) M.clearBlock(rest[0] || '*', rest[1]);
+    const rows = M.listBlocks();
+    const lines2 = [];
+    if (!rows.length) lines2.push('模型不可用名单是空的（没有通道被拉黑）。');
+    else {
+      lines2.push('模型不可用名单（' + rows.length + ' 条，12 小时后自动过期）：');
+      for (const r of rows) {
+        const age = Math.round((Date.now() - r.at) / 60000);
+        lines2.push('  · ' + r.agent + '/' + r.model + ' —— ' + (r.reason || '（没写原因）') + '（' + age + ' 分钟前）');
+      }
+      lines2.push('  解除：atwo models clear [通道] [模型]   或   atwo models clear');
+    }
+    if (json) { RESULT.data = { models: rows }; return EXIT.ok; }
+    for (const l of lines2) console.log(l);
+    return EXIT.ok;
+  });
+}
+
+const table = { doctor: cmdDoctor, queue: cmdQueue, should: cmdShould, gate: cmdGate, hooks: cmdHooks, try: cmdTry, new: cmdNew, batch: cmdBatch, go: cmdGo, check: cmdCheck, diff: cmdDiff, judge: cmdJudge, attest: cmdAttest, models: cmdModels, score: cmdScore, pitfall: cmdPitfall, army: cmdArmy, triage: cmdTriage, fanout: cmdFanout, done: cmdDone, state: cmdState, mode: cmdMode, raw: cmdRaw };
 
 /** 打印规格：人读走 stdout，机器读塞进 RESULT.data（由统一收尾出 JSON）。 */
 function printSpec(target) {

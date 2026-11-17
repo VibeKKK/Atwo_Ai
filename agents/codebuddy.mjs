@@ -34,7 +34,7 @@ export const meta = {
 
 /** 跑一次 CLI，拿 stdout/stderr；退出码非 0 也返回，由调用方判断 */
 function runCli(args, opts = {}) {
-  const { cwd, timeoutMs = 300000, env = {} } = opts;
+  const { cwd, timeoutMs = 300000, env = {}, stdinData = null } = opts;
   return new Promise((resolve) => {
     const e = {
       ...process.env,
@@ -49,8 +49,14 @@ function runCli(args, opts = {}) {
       env: e,
       shell: false,
       windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      // 长提示必须走 stdin：Windows 的命令行上限约 32767 字符，三份大产物拼起来的父审提示轻松超过，
+      // spawn 直接抛 ENAMETOOLONG，父审一票都交不出（2026-11-17 实测三票全丢）。CLI 支持 `-p` 后不带值从 stdin 读。
+      stdio: [stdinData == null ? 'ignore' : 'pipe', 'pipe', 'pipe'],
     });
+    if (stdinData != null && child.stdin) {
+      child.stdin.on('error', () => { /* 子进程提前退出时写 stdin 会 EPIPE，忽略 */ });
+      child.stdin.end(String(stdinData));
+    }
     let out = '', err = '', done = false;
     const finish = (code, extra = {}) => { if (done) return; done = true; clearTimeout(t); resolve({ code, out, err, ...extra }); };
     child.stdout.on('data', (d) => { out += d.toString('utf8'); });
@@ -144,11 +150,17 @@ export async function askCodeBuddy(prompt, opts = {}) {
   // 2026-11-16 rank2：允许单次调用覆写回合数。父审要读 N 份产物的几十个引用行，
   // 默认 10 回合一半就断在 "Max turns (10) exceeded" —— 6 片跑出 3 条假 unreviewed 的真因。
   const maxTurns = String(opts.maxTurns != null ? opts.maxTurns : (process.env.CODEBUDDY_MAX_TURNS || '10'));
-  const args = ['-p', prompt, '--output-format', 'json', '--tools', tools, '--no-session-persistence', '--max-turns', maxTurns];
+  // 超过这个长度的提示不再放进命令行参数：Windows 单条命令行上限约 32767 字符，
+  // 三份 2 万字产物拼成的父审提示必然超限，spawn 抛 ENAMETOOLONG 且一票都交不出。
+  const STDIN_PROMPT_THRESHOLD = 16000;
+  const useStdin = String(prompt).length > STDIN_PROMPT_THRESHOLD;
+  const args = useStdin
+    ? ['-p', '--output-format', 'json', '--tools', tools, '--no-session-persistence', '--max-turns', maxTurns]
+    : ['-p', prompt, '--output-format', 'json', '--tools', tools, '--no-session-persistence', '--max-turns', maxTurns];
   if (permissionMode) args.push('--permission-mode', permissionMode);
   if (model) args.push('--model', model);
 
-  const r = await runCli(args, { cwd, timeoutMs });
+  const r = await runCli(args, { cwd, timeoutMs, stdinData: useStdin ? prompt : null });
 
   if (r.spawnError) {
     const e = new Error('codebuddy 起不来：' + r.spawnError);
