@@ -1,0 +1,102 @@
+{
+  "contract": "atwo-blind-manifest/2",
+  "note": "合并样本：12 份真实历史产物（有缺陷）+ 4 份对照组（引文逐字真）。缺陷样本凑够分母，对照组给出「本该放行」的份数，这样才能算误杀率。",
+  "cases": [
+    {
+      "id": "fab-1",
+      "file": ".atw/fanout/20261117-015238/child-1.md",
+      "label": "bad",
+      "why": "引 fanout/service.go 等不存在的文件"
+    },
+    {
+      "id": "fab-2",
+      "file": ".atw/fanout/20261117-015238/child-2.md",
+      "label": "bad",
+      "why": "引 workbuddy/README.md / ollama/config.go 等不存在的文件"
+    },
+    {
+      "id": "empty-1",
+      "file": ".atw/fanout/20261117-011145/child-1.md",
+      "label": "bad",
+      "why": "通道失败：ANSWER/EVIDENCE 全空"
+    },
+    {
+      "id": "empty-2",
+      "file": ".atw/fanout/20261117-011145/child-2.md",
+      "label": "bad",
+      "why": "通道失败：ANSWER/EVIDENCE 全空"
+    },
+    {
+      "id": "empty-3",
+      "file": ".atw/fanout/20261117-011145/child-3.md",
+      "label": "bad",
+      "why": "通道失败：ANSWER/EVIDENCE 全空"
+    },
+    {
+      "id": "good-a",
+      "file": ".atw/fanout/20261117-011009/child-1.md",
+      "label": "good",
+      "why": "codebuddy PASS，引文经核对"
+    },
+    {
+      "id": "good-b",
+      "file": ".atw/fanout/20261117-011009/child-2.md",
+      "label": "good",
+      "why": "codebuddy PASS，引文经核对"
+    },
+    {
+      "id": "good-c",
+      "file": ".atw/fanout/20261117-011009/child-3.md",
+      "label": "good",
+      "why": "codebuddy PASS，引文经核对"
+    },
+    {
+      "id": "good-d",
+      "file": ".atw/fanout/20261117-012256/child-1.md",
+      "label": "good",
+      "why": "codebuddy PASS"
+    },
+    {
+      "id": "good-e",
+      "file": ".atw/fanout/20261117-012256/child-2.md",
+      "label": "good",
+      "why": "codebuddy PASS"
+    },
+    {
+      "id": "good-f",
+      "file": ".atw/fanout/20261117-010708/child-1.md",
+      "label": "good",
+      "why": "codebuddy PASS"
+    },
+    {
+      "id": "good-g",
+      "file": ".atw/fanout/20261117-010708/child-4.md",
+      "label": "good",
+      "why": "codebuddy PASS"
+    },
+    {
+      "id": "clean-1",
+      "file": "eval/blind-clean/clean-1.md",
+      "label": "good",
+      "why": "对照组：引文从当前仓库逐字抄出"
+    },
+    {
+      "id": "clean-2",
+      "file": "eval/blind-clean/clean-2.md",
+      "label": "good",
+      "why": "对照组：引文从当前仓库逐字抄出"
+    },
+    {
+      "id": "clean-3",
+      "file": "eval/blind-clean/clean-3.md",
+      "label": "good",
+      "why": "对照组：引文从当前仓库逐字抄出"
+    },
+    {
+      "id": "clean-4",
+      "file": "eval/blind-clean/clean-4.md",
+      "label": "good",
+      "why": "对照组：引文从当前仓库逐字抄出"
+    }
+  ]
+}

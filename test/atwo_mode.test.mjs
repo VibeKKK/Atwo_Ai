@@ -13,6 +13,7 @@ const EMPTY = path.join(HERE, 'test', '_tmp_empty_tasks');
 const run = (args, extraEnv = {}) => {
   const r = spawnSync(process.execPath, [ATWO, ...args], {
     cwd: HERE, encoding: 'utf8',
+    timeout: Number(process.env.ATWO_TEST_SPAWN_MS || 180000), // 负载下不给上限会挂到框架超时，红得没信息
     env: { ...process.env, ...extraEnv },
   });
   return { code: r.status, out: (r.stdout || '') + (r.stderr || '') };

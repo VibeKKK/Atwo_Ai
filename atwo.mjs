@@ -15,6 +15,8 @@ import fs from 'node:fs';
 import { discoverVotes as discoverReviewVotes } from './lib/review-feed.mjs';
 import { parseLines, progressLine, classifyLine, decideAbort, summarizeRun } from './lib/supervise.mjs';
 import { judgeVotes } from './vm/votes.mjs';
+import { lateReviewNotice } from './lib/late-review.mjs';
+import { listQueue } from './lib/queue.mjs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { groupByBehavior, splitByBehavior, renderDecisions } from './lib/divergence.mjs';
@@ -1266,6 +1268,18 @@ function cmdDone(args) {
       }
     } catch (e) {
       console.log('  ! 评审票闸门跳过：' + String((e && e.message) || e).slice(0, 120));
+    }
+
+    // 不进闸门，但绝不静默：异步父审/派活还在跑时，done 的结论可能被后来的票推翻。
+    try {
+      const late = lateReviewNotice({
+        reviewState: RESULT.data.review && RESULT.data.review.state,
+        queue: listQueue(HERE),
+      });
+      for (const line of late.lines) console.log(line);
+      if (late.lines.length) RESULT.data.lateReview = late;
+    } catch (e) {
+      console.log('  ! 迟到评审检查跳过：' + String((e && e.message) || e).slice(0, 120));
     }
 
   // M2：修复必须留下一条防回归断言，否则下次同样的问题还会回来。

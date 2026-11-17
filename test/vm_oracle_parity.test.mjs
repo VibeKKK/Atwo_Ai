@@ -44,7 +44,10 @@ const child = spawn(py, [path.join(root, 'vm/oracle_server.py'), '--host', '127.
   { cwd: root, env: { ...process.env, PYTHONIOENCODING: 'utf-8' } });
 const port = await new Promise((resolve, reject) => {
   let buf = '';
-  const timer = setTimeout(() => reject(new Error('python 服务 5s 内没起来: ' + buf.slice(-200))), 5000);
+  // 5s 在满负载时不够：并行跑 codebuddy 时 python 冷启动 + 解释 vm 模块能到 8–15s。
+  // 这不是「服务坏了」，是墙钟判据太紧 —— 放宽到 20s，可用 ATWO_PY_BOOT_MS 覆盖。
+  const bootMs = Number(process.env.ATWO_PY_BOOT_MS || 20000);
+  const timer = setTimeout(() => reject(new Error('python 服务 ' + Math.round(bootMs / 1000) + 's 内没起来（负载敏感，不是必坏；ATWO_PY_BOOT_MS 可调）: ' + buf.slice(-200))), bootMs);
   child.stdout.on('data', (d) => {
     buf += d.toString('utf8');
     // 只认 「http://地址:端口」这一形态，不依赖中文那几个字（编码一变就丢）。

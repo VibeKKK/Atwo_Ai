@@ -1,5 +1,7 @@
-ANSWER: 读了 lib/gate.mjs，结论：这两处定义就是任务要求的实现入口与判据来源。
+ANSWER: 闸门入口是 lib/gate.mjs:69 的 runGate，契约从 vm/oracle-contract.json 读（lib/gate.mjs:118-119）。
 
 EVIDENCE:
-- lib/gate.mjs:13 — `function run(cmd, args, cwd, timeoutMs) {`
-- lib/gate.mjs:14 — `const t0 = Date.now();`
+- lib/gate.mjs:69 — `export function runGate(opts = {}) {`
+- lib/gate.mjs:118 — `const c = JSON.parse(fs.readFileSync(p, 'utf8'));`
+
+NOTES: 结论只覆盖「入口在哪、契约怎么读」这两件事，不评价闸门判据是否完整。
