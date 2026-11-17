@@ -1,0 +1,177 @@
+{
+  "contract": "atwo-split-calibration/1",
+  "note": "10 个真实任务（都来自本仓 2026-11-16/17 的实际改动）。idealChunks / idealGroups 是人工标的『理想切法』：靠人判断哪些文件必须一起改、哪些可以并行。跑 _probe/split_calib.mjs 拿 atwo 的切法与它对比。",
+  "tasks": [
+    {
+      "id": "split-meter",
+      "title": "切分尺子（checkSplit + 接线 fanout）",
+      "task": "给 lib/split.mjs 增加 checkSplit/renderSplitLine/exitForSplit，并在 lib/fanout-cli.mjs 的试跑与真跑两处接闸；补 test/split_score.test.mjs。",
+      "shouldSplit": false,
+      "idealChunks": 1,
+      "idealGroups": [
+        [
+          "lib/split.mjs",
+          "lib/fanout-cli.mjs",
+          "test/split_score.test.mjs"
+        ]
+      ],
+      "why": "三个文件是同一条判据的产出方、消费方与验证方，拆开就没人能验证「尺子对不对」。"
+    },
+    {
+      "id": "lane-hard-timeout",
+      "title": "通道硬超时",
+      "task": "在 lib/lanes.mjs 里加 withHardTimeout，让适配层不认 timeoutMs 时外层到点认输；补 test/lane_hard_timeout.test.mjs。",
+      "shouldSplit": false,
+      "idealChunks": 1,
+      "idealGroups": [
+        [
+          "lib/lanes.mjs",
+          "test/lane_hard_timeout.test.mjs"
+        ]
+      ],
+      "why": "一个函数 + 它的测试，本体 30 行，拆开只会多两倍的调度开销。"
+    },
+    {
+      "id": "reviewer-ledger",
+      "title": "默认父审改台账驱动",
+      "task": "lib/fanout-run.mjs 的默认父审改成 pickReviewLane(cwd)，从 lib/reviewer-ledger.mjs 读台账；加 judgeReviewerRun 判「编造引文」；补 test/reviewer_pick.test.mjs 与 test/reviewer_run_verdict.test.mjs。",
+      "shouldSplit": false,
+      "idealChunks": 1,
+      "idealGroups": [
+        [
+          "lib/fanout-run.mjs",
+          "lib/reviewer-ledger.mjs",
+          "test/reviewer_pick.test.mjs",
+          "test/reviewer_run_verdict.test.mjs"
+        ]
+      ],
+      "why": "选谁审、怎么判它审没审对，是同一个判据的两面；分开写必然两边口径打架。"
+    },
+    {
+      "id": "mcp-server",
+      "title": "MCP 服务（26 个动词自动生成工具）",
+      "task": "新增 lib/mcp-server.mjs（stdio JSON-RPC，工具从 lib/cli-spec.mjs 的 VERBS 自动生成，exit 4 不算工具故障），补 test/mcp_server.test.mjs。",
+      "shouldSplit": false,
+      "idealChunks": 1,
+      "idealGroups": [
+        [
+          "lib/mcp-server.mjs",
+          "lib/cli-spec.mjs",
+          "test/mcp_server.test.mjs"
+        ]
+      ],
+      "why": "生成逻辑强依赖 cli-spec 的形状，改一处另一处必改。"
+    },
+    {
+      "id": "lanesnap",
+      "title": "通道快照 atwo snapshot",
+      "task": "新增 lib/lanesnap.mjs（按 agent 聚合配额记录、给首选模型、跳过被拉黑），在 atwo.mjs 注册 snapshot 动词与 lib/cli-spec.mjs 规格，补 test/lanesnap.test.mjs。",
+      "shouldSplit": false,
+      "idealChunks": 1,
+      "idealGroups": [
+        [
+          "lib/lanesnap.mjs",
+          "atwo.mjs",
+          "lib/cli-spec.mjs",
+          "test/lanesnap.test.mjs"
+        ]
+      ],
+      "why": "新动词要三处登记（实现/表/规格），漏一处当天就有测试红，拆开等于制造漏登记。"
+    },
+    {
+      "id": "vm-ternary",
+      "title": "三进制 VM：机器码解释器 + 判定程序",
+      "task": "vm/machine.mjs 加 PUSHNUM 与多操作数解码，vm/compiler.mjs 的 runWithCompiler 改委托 runMachine；另起 vm/verdict.mjs 用程序生成判定，补 test/verdict_program.test.mjs。",
+      "shouldSplit": false,
+      "idealChunks": 1,
+      "idealGroups": [
+        [
+          "vm/machine.mjs",
+          "vm/compiler.mjs",
+          "vm/verdict.mjs",
+          "test/verdict_program.test.mjs"
+        ]
+      ],
+      "why": "解释器/编译器是同一层的修 bug；判定程序是上层新功能，先把底层修绿再上层才有意义 —— 两片之间有先后但也算两件事。",
+      "corrected": "原标 2 片，复核后改为 1 片：verdict.mjs 生成的就是 machine 的字节码，解释器不修好上层根本无法验证 —— 它们不是能并行的两件事。"
+    },
+    {
+      "id": "docs-batch",
+      "title": "五份文档批量复核",
+      "task": "复核并统一 docs/research/atwo-value-paper.md、docs/research/views.md、docs/research/views.trae.md、docs/research/views.codebuddy.md、README.md 的口径与错别字。",
+      "shouldSplit": true,
+      "idealChunks": 5,
+      "idealGroups": [
+        [
+          "docs/research/atwo-value-paper.md"
+        ],
+        [
+          "docs/research/views.md"
+        ],
+        [
+          "docs/research/views.trae.md"
+        ],
+        [
+          "docs/research/views.codebuddy.md"
+        ],
+        [
+          "README.md"
+        ]
+      ],
+      "why": "五份文档互不依赖，改动纯文本、无共享符号 —— 这是切分收益最大的形态。"
+    },
+    {
+      "id": "tests-batch",
+      "title": "三个孤立测试文件补断言",
+      "task": "给 test/pitfall.test.mjs、test/score.test.mjs、test/outcome.test.mjs 各补三条反向断言（做错时必须红）。",
+      "shouldSplit": true,
+      "idealChunks": 3,
+      "idealGroups": [
+        [
+          "test/pitfall.test.mjs"
+        ],
+        [
+          "test/score.test.mjs"
+        ],
+        [
+          "test/outcome.test.mjs"
+        ]
+      ],
+      "why": "三个文件零耦合，改动机械、判据明确（红/绿），适合并行。"
+    },
+    {
+      "id": "models-budget",
+      "title": "模型预算闸 + 不可用名单",
+      "task": "lib/models.mjs 加 MAX_DEFAULT_MULT 预算闸与拉黑名单（blockModel/isBlocked/usablePool），lib/swarm.mjs 配额类错误立刻拉黑并换模型；补 test/models_budget.test.mjs 与 test/models_block.test.mjs。",
+      "shouldSplit": false,
+      "idealChunks": 1,
+      "idealGroups": [
+        [
+          "lib/models.mjs",
+          "lib/swarm.mjs",
+          "test/models_budget.test.mjs",
+          "test/models_block.test.mjs"
+        ]
+      ],
+      "why": "「谁可以被选」与「选错后怎么换」是两层，可以并行；但各自要带上自己的测试。",
+      "corrected": "原标 2 片，复核后改为 1 片：models_block 测的就是 models.mjs 的那张名单，名单与消费方同源。"
+    },
+    {
+      "id": "atwo-verbs",
+      "title": "给 atwo.mjs 加两个新动词",
+      "task": "在 atwo.mjs 加 cmdPitfall 与 cmdSnapshot 两个动词，实现分别在 lib/pitfalls.mjs 与 lib/lanesnap.mjs，并在 lib/cli-spec.mjs 补规格。",
+      "shouldSplit": false,
+      "idealChunks": 1,
+      "idealGroups": [
+        [
+          "atwo.mjs",
+          "lib/pitfalls.mjs",
+          "lib/lanesnap.mjs",
+          "lib/cli-spec.mjs"
+        ]
+      ],
+      "why": "两个动词逻辑独立，但都要改同一个 atwo.mjs —— 这一片共享文件必须串行，切了会互相覆盖（今天真丢过一次 snapshot）。",
+      "corrected": "原标 2 片，复核后改为 1 片：两个动词都要改同一个 atwo.mjs（函数+table+规格三处），并行必互相覆盖 —— 今天真的被覆盖丢过一次 snapshot。"
+    }
+  ]
+}
