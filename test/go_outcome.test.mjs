@@ -25,13 +25,13 @@ const fake = (ms, body) => {
   const p = path.join(TMP, `orch_${ms}_${Math.random().toString(36).slice(2, 6)}.mjs`);
   fs.writeFileSync(p, [
     "import fs from 'node:fs';",
-    `setTimeout(() => { fs.writeFileSync(${JSON.stringify('lib/p01_probe.mjs')}, ${JSON.stringify(body)}, 'utf8'); }, ${ms});`,
+    `setTimeout(() => { fs.writeFileSync(${JSON.stringify('lib/probe_p01.mjs')}, ${JSON.stringify(body)}, 'utf8'); }, ${ms});`,
     'setInterval(() => {}, 1000);',
   ].join('\n'), 'utf8');
   return p;
 };
 
-const runGo = ({ orch, deadline, target = 'lib/p01_probe.mjs' }) => {
+const runGo = ({ orch, deadline, target = 'lib/probe_p01.mjs' }) => {
   const r = spawnSync(process.execPath, [ATWO, 'go', `交付 ${target}`, '--size', 'S', '--json'], {
     cwd: HERE,
     encoding: 'utf8',
@@ -42,7 +42,7 @@ const runGo = ({ orch, deadline, target = 'lib/p01_probe.mjs' }) => {
   return { status: r.status, json: j };
 };
 
-const probe = path.join(HERE, 'lib', 'p01_probe.mjs');
+const probe = path.join(HERE, 'lib', 'probe_p01.mjs');
 const hadMode = fs.existsSync(MODE);
 const savedMode = hadMode ? fs.readFileSync(MODE, 'utf8') : null;
 
@@ -79,7 +79,7 @@ fs.writeFileSync(MODE, JSON.stringify({ mode: 'off', since: new Date().toISOStri
     const o = json && json.data && json.data.outcome;
     eq(Array.isArray(o && o.landed) && o.landed.length, 1, 'landed 条数');
     eq(typeof o.landed[0].size === 'number' && o.landed[0].size > 0, true, 'size');
-    eq(path.basename(String(o.landed[0].path)), 'p01_probe.mjs', '路径');
+    eq(path.basename(String(o.landed[0].path)), 'probe_p01.mjs', '路径');
   });
 } finally {
   if (savedMode === null) fs.rmSync(MODE, { force: true });

@@ -6,6 +6,10 @@ import fs from 'node:fs';
 import { runFanout } from '../lib/fanout-run.mjs';
 
 const childAsk = async () => ({ ok: true, addedText: 'ANSWER:\n答案\nEVIDENCE:\natwo.mjs:190 const EXIT' });
+// 探活要注入，不许让单元测试去 spawn 真实通道：`lanes: ['codebuddy']` 一旦走真解析，
+// 每次用例都要付一次通道探测（本机实测 30–100s，负载下直接超时判红）。
+// 这个测试要验的是「同源/异源这个标签算得对不对」，与通道能不能起来无关。
+const PROBES = [{ lane: 'codebuddy', ready: true, parallel: 6, quality: 'high', roles: ['writer', 'review'] }];
 const reviewAskOf = (tag) => async () => ({ ok: true, addedText: JSON.stringify({ reviews: [{ id: 'child-1', verdict: 'PASS', why: 'w' }, { id: 'child-2', verdict: 'PASS', why: 'w' }] }), tag });
 
 let pass = 0, fail = 0;
@@ -19,12 +23,12 @@ await ta('注入同一个 ask 当写手与父审 → 同源', async () => {
 });
 
 await ta('编队写手是真实通道、父审是注入的另一源 → 异源', async () => {
-  const r = await runFanout({ task: 't', parts: 2, lanes: ['codebuddy'], autoLanes: false, ask: childAsk, reviewAsk: reviewAskOf('x'), preGate: false, reviewChunk: 0 });
+  const r = await runFanout({ task: 't', parts: 2, lanes: ['codebuddy'], autoLanes: false, probes: PROBES, ask: childAsk, reviewAsk: reviewAskOf('x'), preGate: false, reviewChunk: 0 });
   assert.strictEqual(r.homogeneous, false, '写手与父审不是同一来源时不许标同源');
 });
 
 await ta('writerLane 记真实通道，不再写 planned 占位符', async () => {
-  const r = await runFanout({ task: 't', parts: 2, lanes: ['codebuddy'], autoLanes: false, ask: childAsk, reviewAsk: reviewAskOf('x'), preGate: false, reviewChunk: 0 });
+  const r = await runFanout({ task: 't', parts: 2, lanes: ['codebuddy'], autoLanes: false, probes: PROBES, ask: childAsk, reviewAsk: reviewAskOf('x'), preGate: false, reviewChunk: 0 });
   assert.notStrictEqual(r.writerLane, 'planned');
   assert.ok(String(r.writerLane).includes('codebuddy'));
 });

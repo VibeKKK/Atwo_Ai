@@ -12,6 +12,7 @@
  *   node test/all.mjs --dir <目录>        # 跑另一个目录（自测用）
  *   node test/all.mjs --quiet             # 只打失败的
  *   TEST_NO_RETRY=1 node test/all.mjs     # 关掉复跑（CI 想严格时用）
+ *   node test/all.mjs --strict            # 跑测期间往真实仓库写文件也算失败（收工/CI 用）
  *
  * 三态而不是两态（2026-11-16 改）：
  *   - ✓ 通过
@@ -94,6 +95,20 @@ function runOnce(f) {
   return { f, ok, ms, timedOut, code: r.status, out, kind };
 }
 
+// 跑测前后的工作区快照：测试写到真实仓库里 = 污染。
+// 判据是**新增**（跑完多出来的路径），不是差异总量 —— 别人同时在改工作区不会冤枉测试。
+// 默认只报告；--strict 才把它算失败（CI 或收工前用）。
+function gitSnapshot() {
+  const r = spawnSync('git', ['status', '--porcelain', '-z'], { cwd: ROOT, encoding: 'utf8' });
+  if (r.status !== 0) return null;
+  const map = new Map();
+  for (const item of String(r.stdout || '').split('\0')) {
+    if (item.length > 3) map.set(item.slice(3), item.slice(0, 2));
+  }
+  return map;
+}
+const strict = argv.includes('--strict');
+const snapBefore = gitSnapshot();
 const t = (ms) => (ms / 1000).toFixed(1) + 's';
 const startedAll = Date.now();
 const passed = [];
@@ -146,7 +161,29 @@ if (failed.length) {
   }
 }
 
-const head = failed.length ? '✗ ' : '✓ ';
+const snapAfter = gitSnapshot();
+const polluted = [];
+const touched = [];
+if (snapBefore && snapAfter) {
+  for (const [file, st] of snapAfter) {
+    if (!snapBefore.has(file)) polluted.push(file);
+    else if (snapBefore.get(file) !== st) touched.push(file);
+  }
+}
+if (polluted.length) {
+  console.log('\n──── 工作区污染（跑测期间新出现；测试该写到临时目录/被忽略路径）────');
+  for (const x of polluted.slice(0, 20)) console.log('  + ' + x);
+  if (polluted.length > 20) console.log('  … 另有 ' + (polluted.length - 20) + ' 条');
+  if (strict) console.log('  （--strict：算失败）');
+}
+if (touched.length) {
+  // 不判死：别人（或我自己）可能正在同一个工作区里改文件，跑测期间 mtime/状态变了。
+  // 但如果这些文件跟代码无关，就该怀疑是测试写了已跟踪文件 —— 用 git diff 看一眼比猜快。
+  console.log('\n──── 跑测期间被改动的已跟踪文件（不判失败，请 git diff 确认是谁改的）────');
+  for (const x of touched.slice(0, 20)) console.log('  ~ ' + x);
+}
+const head = failed.length || (strict && polluted.length) ? '✗ ' : '✓ ';
 const flakyNote = flaky.length ? ' · 假红 ' + flaky.length + '（复跑已绿）' : '';
-console.log('\n' + head + '通过 ' + (passed.length + flaky.length) + ' / ' + files.length + flakyNote + ' · 用时 ' + totalS + 's');
-process.exit(failed.length ? 1 : 0);
+const dirtyNote = polluted.length ? ' · 污染 ' + polluted.length + (strict ? '（算失败）' : '（仅报告）') : '';
+console.log('\n' + head + '通过 ' + (passed.length + flaky.length) + ' / ' + files.length + flakyNote + dirtyNote + ' · 用时 ' + totalS + 's');
+process.exit(failed.length || (strict && polluted.length) ? 1 : 0);

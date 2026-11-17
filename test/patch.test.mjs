@@ -24,6 +24,20 @@ function test(name, fn) {
 }
 
 const NL2 = String.fromCharCode(10);
+// 造一个一次性的小 git 仓库当被测对象：主仓库有 474 个文件，副本每次 add 全仓库要 1.5-3.3s；
+// 小仓库只有 1 个文件，整套 patch 流程从 ~4s 降到几十毫秒。断言的内容一条没减。
+function tmpRepo() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'patch-repo-'));
+  const git = (args) => spawnSync('git', args, { cwd: dir, encoding: 'utf8' });
+  git(['init', '-q']);
+  git(['config', 'user.email', 't@t']);
+  git(['config', 'user.name', 't']);
+  fs.mkdirSync(path.join(dir, 'lib'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'lib', 'base.mjs'), 'export const a = 1;' + NL2);
+  git(['add', '-A']);
+  git(['commit', '-qm', 'init']);
+  return dir;
+}
 const fakeAskWriting = (rel, content) => async (prompt, opts) => {
   const target = path.join(opts.cwd, rel);
   fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -52,10 +66,11 @@ await test('写权限是显式给的，不是默认（WRITE_TOOLS 含 Write/Edit
 });
 
 await test('假会话写一个文件 → 出 patch，且主仓库里没有这个文件', async () => {
+  const repo = tmpRepo();
   const rel = 'lib/__patch_probe_ok.mjs';
-  assert.equal(fs.existsSync(path.join(HERE, rel)), false, '前置：主仓库本来不该有这个文件');
+  assert.equal(fs.existsSync(path.join(repo, rel)), false, '前置：被测仓库本来不该有这个文件');
   const r = await runPatch({
-    cwd: HERE,
+    cwd: repo,
     task: '新建一个占位模块',
     ask: fakeAskWriting(rel, 'export const probe = 1;' + NL2),
   });
@@ -64,20 +79,22 @@ await test('假会话写一个文件 → 出 patch，且主仓库里没有这个
   const diff = fs.readFileSync(r.patchPaths[0], 'utf8');
   assert.match(diff, /__patch_probe_ok\.mjs/, '未跟踪的新文件必须进 patch（add -N 那一步）');
   assert.match(diff, /export const probe = 1/);
-  assert.equal(fs.existsSync(path.join(HERE, rel)), false, '主仓库绝不能被动过');
+  assert.equal(fs.existsSync(path.join(repo, rel)), false, '被测仓库绝不能被动过');
   fs.rmSync(r.patchPaths[0], { force: true });
 });
 
 await test('假会话什么都不改 → 判 no-change，不出 patch', async () => {
-  const r = await runPatch({ cwd: HERE, task: '装死', ask: async () => ({ ok: true, text: '我想了想，不用改' }) });
+  const repo = tmpRepo();
+  const r = await runPatch({ cwd: repo, task: '装死', ask: async () => ({ ok: true, text: '我想了想，不用改' }) });
   assert.equal(r.ok, false);
   assert.match(r.parts[0].reason, /no-change/);
   assert.equal(r.patchPaths.length, 0);
 });
 
 await test('写出的文件语法错 → 判 syntax，整份丢（不出 patch）', async () => {
+  const repo = tmpRepo();
   const r = await runPatch({
-    cwd: HERE,
+    cwd: repo,
     task: '写坏一个文件',
     ask: fakeAskWriting('lib/__patch_probe_bad.mjs', 'export const x = {;' + NL2),
   });
@@ -87,8 +104,9 @@ await test('写出的文件语法错 → 判 syntax，整份丢（不出 patch�
 });
 
 await test('验收命令红 → 整份丢（测试没过就不是产物）', async () => {
+  const repo = tmpRepo();
   const r = await runPatch({
-    cwd: HERE,
+    cwd: repo,
     task: '改对了但测试不过',
     ask: fakeAskWriting('lib/__patch_probe_test.mjs', 'export const probe = 2;' + NL2),
     testCmd: 'node -e "process.exit(1)"',
@@ -102,8 +120,9 @@ await test('验收命令红 → 整份丢（测试没过就不是产物）', asy
 });
 
 await test('验收命令绿 → 出 patch', async () => {
+  const repo = tmpRepo();
   const r = await runPatch({
-    cwd: HERE,
+    cwd: repo,
     task: '改对了且测试过',
     ask: fakeAskWriting('lib/__patch_probe_green.mjs', 'export const probe = 3;' + NL2),
     testCmd: 'node -e "process.exit(0)"',

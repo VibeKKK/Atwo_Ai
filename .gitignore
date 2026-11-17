@@ -48,6 +48,7 @@ reviews/
 .atw/army/
 .atw/workspace/
 .atw/*.json
+.atw/*.jsonl
 .agents/
 .codebuddy/
 .dsh/
