@@ -85,3 +85,31 @@ node atwo.mjs drain --limit 2 --json >> .atw\inbox\drain.cron.log 2>&1
 git checkout <此前的 commit> -- lib/inbox.mjs lib/inbox-cli.mjs lib/writeback.mjs
 ```
 降级是纯增量：`MAX_ATTEMPTS` 删掉、`asReport` 分支删掉，`drain` 就退化成「每条只跑一次」。
+## 附：should 的只读豁免（同一批改动）
+
+派活的第二道拦路虎是同一条判据用错了对象：`lib/should.mjs` 的热点文件惩罚抓的是**文件名**，
+但同一个文件在「读它」和「改它」里是完全不同的事 —— 读一个文件不会跟别人顶掉它。
+
+实测（2026-11-17）：插件 `atwo_fanout` 传了一个只读审计任务，文本里有 `atwo.mjs`、`package.json`，
+直接被判 `self` 拒掉（exit 3），只能加 `--force-should` 绕过。**会被常态绕过的闸门等于没有闸门。**
+
+修法：`hotHit` 段加一层动作判据 —— 命中热点文件时先看有没有写动作：
+
+```
+if (!writes && reads)  → hot-file-readonly（权重 0，不罚）
+否则                    → hot-file（权重 -3，与原来一致）
+```
+
+`WRITE_VERB` 必须宽（改/写/加上/加进/换成/设为/覆盖/移除/调整…），`READ_VERB` 只用来确认「确实在读」。
+**读写都提 → 按写算；完全不提动作 → 从紧按冲突算。** 判据不许靠猜。
+
+四例实测：
+
+| 任务 | 改前 | 改后 |
+| --- | --- | --- |
+| 看 atwo.mjs 的 table 有几个动词 | self (-3) | either (0) |
+| 审计 atwo.mjs 与 package.json 的 CI 配置是否完整 | self (-3) | either (0) |
+| 改 atwo.mjs 的 done 闸门 | self (-3) | self (-3) |
+| 给 lib 下 12 个互不相同的 .mjs 各自补边界用例 | delegate (3) | delegate (3) |
+
+测试：`test/should_readonly.test.mjs` 6 条（含「读写都提按写算」「完全不提动作从紧」两条反向断言）。
