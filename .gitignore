@@ -40,6 +40,8 @@ collab/heartbeat.json
 collab/load.json
 collab/.armed
 reviews/
+.atw/patches/
+.atw/inbox/
 .atw/tasks/
 .atw/fanout/
 .atw/queue/

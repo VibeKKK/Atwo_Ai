@@ -25,6 +25,8 @@ import { summarize } from './lib/report.mjs';
 import { quotaRecord, appendQuota } from './lib/quota-log.mjs';
 import { selfLanded, detectTarget } from './lib/land.mjs';
 import { makeFanoutVerb } from './lib/fanout-cli.mjs';
+import { makePatchVerb } from './lib/patch-cli.mjs';
+import { makeDrainVerb } from './lib/inbox-cli.mjs';
 import { makeQueueVerb } from './lib/queue-cli.mjs';
 import { makeCostVerb } from './lib/cost-cli.mjs';
 import { makePoolVerb } from './lib/pool-cli.mjs';
@@ -1628,6 +1630,8 @@ if (JSON_MODE) {
 }
 
 const cmdFanout = makeFanoutVerb({ EXIT, RESULT, HERE, die, activeTask });
+const cmdPatch = makePatchVerb({ EXIT, RESULT, HERE, die });
+const cmdDrain = makeDrainVerb({ EXIT, RESULT, HERE, die });
 const cmdQueue = makeQueueVerb({ EXIT, RESULT, HERE, die });
 const cmdCost = makeCostVerb({ EXIT, RESULT, HERE, die });
 const cmdPool = makePoolVerb({ EXIT, RESULT, HERE, die });
@@ -1678,7 +1682,7 @@ function cmdSnapshot() {
   RESULT.data.snapshot = snap;
   return EXIT.ok;
 }
-const table = { doctor: cmdDoctor, queue: cmdQueue, cost: cmdCost, pool: cmdPool, review: cmdReview, should: cmdShould, gate: cmdGate, hooks: cmdHooks, try: cmdTry, new: cmdNew, batch: cmdBatch, go: cmdGo, check: cmdCheck, diff: cmdDiff, judge: cmdJudge, attest: cmdAttest, models: cmdModels, snapshot: cmdSnapshot, board: cmdBoard, tail: cmdTail, stop: cmdStop, score: cmdScore, pitfall: cmdPitfall, army: cmdArmy, triage: cmdTriage, blind: cmdBlind, fanout: cmdFanout, done: cmdDone, state: cmdState, mode: cmdMode, raw: cmdRaw };
+const table = { doctor: cmdDoctor, queue: cmdQueue, cost: cmdCost, pool: cmdPool, review: cmdReview, should: cmdShould, gate: cmdGate, hooks: cmdHooks, try: cmdTry, new: cmdNew, batch: cmdBatch, go: cmdGo, check: cmdCheck, diff: cmdDiff, judge: cmdJudge, attest: cmdAttest, models: cmdModels, snapshot: cmdSnapshot, board: cmdBoard, tail: cmdTail, stop: cmdStop, score: cmdScore, pitfall: cmdPitfall, army: cmdArmy, triage: cmdTriage, blind: cmdBlind, fanout: cmdFanout, patch: cmdPatch, drain: cmdDrain, done: cmdDone, state: cmdState, mode: cmdMode, raw: cmdRaw };
 
 /** 打印规格：人读走 stdout，机器读塞进 RESULT.data（由统一收尾出 JSON）。 */
 function printSpec(target) {
@@ -1744,7 +1748,7 @@ if (verb === 'caps' || verb === 'spec' || verb === 'capabilities') {
         const v = VERBS[verb];
         if (verb === 'go') {
           args = args.map((a) => (a === '--dry-run' ? '--plan' : a));
-        } else if (verb === 'fanout' || verb === 'army') {
+        } else if (verb === 'fanout' || verb === 'army' || verb === 'patch' || verb === 'drain') {
           // fanout-cli 自己认 --dry-run
         } else if (v.cost === 'spawn') {
           code = die('atwo ' + verb + ' 还不支持 --dry-run：它会在你确认前就派活。\n要么去掉这个参数直接跑，要么改用 atwo fanout "<任务>" --dry-run 先验一遍。', EXIT.usage);
