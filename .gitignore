@@ -83,3 +83,6 @@ memory/.wb-targets.json
 eval/blind-objective.json
 _append_shared.mjs
 _mk_baseline.mjs
+
+# graft 的图库（本地产物，不进版本库）
+.graft/
