@@ -795,6 +795,13 @@ try {
     }
     const r = rr.r;
     const reviewMs = Number(r && r.elapsedMs) > 0 ? Number(r.elapsedMs) : (Date.now() - __rt0);
+  // 评审也要记账：review 走的是内联 dispatch，不经过 dispatch() 里的 budgetRecord
+  try {
+    const u = (r && r.usage) || {};
+    const tokIn = u.input_tokens ?? u.inputTokens ?? u.in ?? u.prompt_tokens ?? 0;
+    const tokOut = u.output_tokens ?? u.outputTokens ?? u.out ?? u.completion_tokens ?? 0;
+    budgetRecord((rr && rr.reviewer) || 'review', { input: tokIn, output: tokOut, ok: !!(r && r.ok) });
+  } catch { /* 记账失败不影响评审 */ }
     const reviewer = rr.reviewer;
     const v = { verdict: rr.verdict, issues: rr.issues, weak: rr.weak };
 
