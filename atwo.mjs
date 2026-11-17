@@ -48,6 +48,7 @@ import { probeReviewers, formatProbes } from './lib/reviewer-probe.mjs';
 import { shouldDelegate, formatShould } from './lib/should.mjs';
 import { runGate, formatGate, formatGateBrief, acceptTargets } from './lib/gate.mjs';
 import { judgeOutcome, formatOutcome, exitForOutcome, judgeStall, pruneLanes } from './lib/outcome.mjs';
+import { renderTests, runAffectedTests } from './lib/test-facts.mjs';
 import { pitfallRecord, appendPitfall, readPitfalls, matchPitfalls, renderPitfalls } from './lib/pitfalls.mjs';
 import { scoreRecord, appendScore, readScore, summarizeScores, dailyTrend, delta } from './lib/score.mjs';
 
@@ -786,6 +787,24 @@ async function cmdGo(args) {
       }));
     } catch { /* 落账失败不影响派活结果 */ }
     for (const line of formatOutcome(outcome)) console.log(line);
+    // 验收吃测试（默认关，ATWO_VERIFY_TESTS=1 才跑）：改动的波及面 × graft 的图
+    // → 只跑受影响的测试文件。默认关的理由是墙钟：一次真跑可能几十秒到两分钟，
+    // 而大多数派活改的是新文件、根本没有测试能波及它（那时代价是纯浪费）。
+    if (process.env.ATWO_VERIFY_TESTS === '1') {
+      try {
+        const changed = (outcome.landed && outcome.landed.length ? outcome.landed : (outcome.target ? [outcome.target] : []));
+        const t = runAffectedTests(HERE, changed, { timeoutMs: Number(process.env.ATWO_VERIFY_TESTS_TIMEOUT_MS || 180000) });
+        RESULT.data.outcome.tests = t;
+        console.log(renderTests(t));
+        // 红了就把结论从 ok 降成 partial：产物在、语法过，但确实弄坏了别处。
+        if (t && t.ok === false && outcome.verdict === 'ok') {
+          outcome.verdict = 'partial';
+          outcome.hint = (outcome.hint ? outcome.hint + '；' : '') + '受影响的测试有红（详见 outcome.tests）';
+        }
+      } catch (e) {
+        console.log('测试：没跑成（' + String(e && e.message).slice(0, 80) + '）');
+      }
+    }
   } catch (e) {
     RESULT.data.outcome = { verdict: code === 0 ? 'ok' : 'failed', target: null, landed: [], verified: [], hint: '产物判定没跑成：' + String(e && e.message).slice(0, 60) };
   }
