@@ -71,6 +71,7 @@ eval/*-report.json
 collab/archive/
 collab/peers.json
 collab/trae.mjs.rank1-*
+PLAN-2026*.md
 .atw/jobs/
 collab/.read.json
 memory/_probe/

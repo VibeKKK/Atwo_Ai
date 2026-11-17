@@ -79,7 +79,7 @@ Windows 单条命令行上限约 32767 字符，三份 2 万字产物拼成的�
 `test/review_prompt_size.test.mjs`（新）· `agents/codebuddy.mjs`（stdin 长提示）· `lib/fanout.mjs`（父审提示截断）·
 `atwo.mjs`（table 加 queue）· `lib/cli-spec.mjs`（queue 条目）· `.gitignore`（`.atw/queue/`）。
 
-仓库外的两件（要记住，不在版本库里）：`C:\Users\kkk\.dsh\tools\atwo-queue.cmd`、`atwo-queue-hidden.vbs`、计划任务 `AtwoQueueSupervisor`。
+仓库外的两件（要记住，不在版本库里）：`<用户目录>\.dsh\tools\atwo-queue.cmd`、`atwo-queue-hidden.vbs`、计划任务 `AtwoQueueSupervisor`。
 
 ## 八、回滚
 

@@ -45,12 +45,12 @@ L3 的验收目标是「服务在 VM 里跑，atwo 跨主机判定」，所以�
 ```
 Kali: /opt/ternary-oracle/{oracle_server.py, oracle-contract.json}
        setsid nohup python3 -u oracle_server.py --host 0.0.0.0 --port 8731
-Windows → curl http://192.168.88.128:8731/health
+Windows → curl http://ORACLE_HOST:8731/health
   {"ok":true,"service":"ternary-oracle","version":"1.0.0-py","engine":"python",
    "cut":{"high":0.45,"mid":0.22},"zLimit":3.0}
-Windows → node atwo.mjs judge --remote --url http://192.168.88.128:8731 --votes A,A,A
+Windows → node atwo.mjs judge --remote --url http://ORACLE_HOST:8731 --votes A,A,A
   结论 ACCEPT（都认了，可以过） · 置信度 0.762 · 判定 1（consensus-accept）  rc=0
-Windows → node atwo.mjs judge --remote --url http://192.168.88.128:8731 --votes A,A,R
+Windows → node atwo.mjs judge --remote --url http://ORACLE_HOST:8731 --votes A,A,R
   结论 unreviewed（下不了结论） · 置信度 0.109 · 判定 -1（别判）            rc=0
 ```
 

@@ -41,7 +41,15 @@ export async function askDeepSeek(prompt, opts = {}) {
   const messages = [];
   if (opts.system) messages.push({ role: 'system', content: String(opts.system) });
   messages.push({ role: 'user', content: String(prompt == null ? '' : prompt) });
-  const body = { model, messages, stream: false, max_tokens: Number(opts.maxTokens) > 0 ? Number(opts.maxTokens) : 2400, temperature: Number(opts.temperature) >= 0 ? Number(opts.temperature) : 0 };
+  // 2026-11-17 实测（三组对照）：deepseek-flash / deepseek-v4-pro 都是「思考优先」模型，
+  // reasoning_tokens 会把 max_tokens 整个吃光、content 恒为空、finish_reason=length：
+  //   max_tokens 8000  → 29,035 字思考、content 0
+  //   max_tokens 32000 → content 1,917（跑了 32s，靠「思考跑完还有余量」才挤出正文）
+  //   reasoning_effort:'minimal' → 无效，照样 13,906 字思考
+  //   thinking:{type:'disabled'} → 4.0s、content 2,245、reasoning 0、正常以 VERDICT 结尾 ✅
+  // 所以默认关思考（OPTS 可开）。不关的话父审调用只能拿到半截散文，永远解析不出裁决。
+  const thinkOff = opts.thinking === undefined ? true : !opts.thinking;
+  const body = { model, messages, stream: false, max_tokens: Number(opts.maxTokens) > 0 ? Number(opts.maxTokens) : 4000, temperature: Number(opts.temperature) >= 0 ? Number(opts.temperature) : 0, ...(thinkOff ? { thinking: { type: 'disabled' } } : {}) };
   const ac = new AbortController();
   const timer = setTimeout(() => { try { ac.abort(); } catch {} }, timeoutMs);
   try {

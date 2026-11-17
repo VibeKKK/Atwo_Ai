@@ -45,7 +45,7 @@
   `D:\local work place\test1`，需在 Trae 里点「打开文件夹」指回）。
 
 ## 5 每日签到（用户令）
-签到是插件自带机制：`C:\Users\kkk\.dsh\channel-pack\auto-checkin.json`（`enabled: true`）。
+签到是插件自带机制：`<用户目录>\.dsh\channel-pack\auto-checkin.json`（`enabled: true`）。
 两边每天各确认一次 `lastDate`，失败要在本文记一行。
 
 ## 6 效率事实（实测，不是转述）

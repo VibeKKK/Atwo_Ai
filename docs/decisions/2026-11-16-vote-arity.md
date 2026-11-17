@@ -50,7 +50,7 @@ node test/vm_oracle_parity   → 10 / 0（9 组契约向量 + 200 组随机 z + 
 py -m py_compile vm/oracle_server.py → OK
 ```
 
-跨主机（Kali `192.168.88.128:8731`，`setsid nohup python3`，PPID 1）：
+跨主机（Kali `ORACLE_HOST:8731`，`setsid nohup python3`，PPID 1）：
 
 | 输入 | node 本地 | Kali python |
 |---|---|---|
@@ -59,7 +59,7 @@ py -m py_compile vm/oracle_server.py → OK
 | `{zValues:[0.5×9]}` | -1 / 别判 / 0.000（nSources 1、agreement 0） | 同（stats.nSources 1） |
 | `{zValues:[{z:1.2,source:m0..m8}]}` | +1 / 0.834（nSources 9、agreement 1） | 同 |
 
-`atwo judge --remote --url http://192.168.88.128:8731 --votes A,A,A` → unreviewed / no-roster，RC 0。
+`atwo judge --remote --url http://ORACLE_HOST:8731 --votes A,A,A` → unreviewed / no-roster，RC 0。
 
 ## 5. 已知不对称 / 未做
 
