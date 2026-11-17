@@ -8,7 +8,7 @@ import assert from 'node:assert';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { pickReviewLane, runFanout } from '../lib/fanout-run.mjs';
+import { pickReviewLaneDetail, pickReviewLane, runFanout } from '../lib/fanout-run.mjs';
 
 let pass = 0, fail = 0;
 async function ta(name, fn) { try { await fn(); pass += 1; console.log('  ✓ ' + name); } catch (e) { fail += 1; console.log('  ✗ ' + name + ' — ' + ((e && e.message) || e)); } }
@@ -67,6 +67,19 @@ await ta('显式 --review-lane 指向不存在的通道 → 抛，不许悄悄�
     /没有这个通道|no-such-lane/,
   );
 });
+await ta('台账空（陌生人的干净 clone）也要异源：静态推测一条不同于主力的，并标明依据', async () => {
+  // 2026-11-18 干净检出实测：没有 memory/reviewer-ledger.jsonl，旧代码直接返回 'codebuddy'，
+  // 而主力也是 codebuddy → reviewWanted=codebuddy、homogeneous=true，父审只能自审。
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'atwo-hetero-empty-'));
+  const detail = pickReviewLaneDetail(d, { avoid: ['codebuddy'] });
+  assert.notStrictEqual(detail.lane, 'codebuddy', '台账空时也不许挑主力那条');
+  assert.strictEqual(detail.source, 'static', '来源要如实标 static，别冒充实测');
+  assert.strictEqual(pickReviewLane(d, { avoid: ['codebuddy'] }), detail.lane, '薄壳返回同一条');
+  // 一整个本机只有一条通道时不许瞎挑：排空就退回，留着来源标记让人看得见。
+  const all = pickReviewLaneDetail(d, { avoid: [detail.lane] });
+  assert.ok(all.lane && all.lane !== detail.lane, '避开首选后要换下一条：' + all.lane);
+});
+
 await ta('异源父审没给票 → 退回主力重审一次，并留痕（不许白等成 exit 5）', async () => {
   // 2026-11-18 实测形态：父审是 trae，340s 后回「界面占位文案」，两片全 unreviewed，整跑退出 5。
   // 退回自审至少能给出结论 —— 但必须在产物里说清「这次是自审，因为异源没给票」。
