@@ -240,8 +240,21 @@ if (cmd === 'memory') {
     process.exit(0);
   }
 
-const NO_AGENT_CMDS = ['eph','ctx','duo','stats','auto','pick','doctor','probe','budget','health','list','swarm','sub','top','do'];
+// 不需要 agent 的命令。漏登记的症状：`orchestra.mjs gc`（不带参数）会被当成「未知 agent」
+// 直接 usage + exit 2，而 `gc --dry` 反而能跑 —— 因为后者凑巧把 --dry 当成了 agent 名。
+//
+// 2026-11-17 实录（这条注释是给下一次漏登记的人看的）：
+//   `orchestra.mjs review <file>` 漏登记 'review' → who 变成了文件路径
+//   → needsAgent 为真 → 走自动选路 → 最终 `未知 agent: D:/tmp/xx.md` exit 2。
+//   症状不是「评审报错」，而是**每一次 4 路派活的评审阶段都判 failed**，
+//   产物其实是好的，红的是评审这一环 —— 查了半天才发现是白名单少一个词。
+// 判据：凡是「第一个位置参数不是通道名」的动词都必须登记在这里。
+const NO_AGENT_CMDS = ['eph','ctx','duo','stats','auto','pick','doctor','probe','budget','health','list','swarm','sub','top','do','gc','review'];
 const needsAgent = !NO_AGENT_CMDS.includes(cmd);
+// 不需要 agent 的动词：第一个位置参数在解析时被吃进 who，必须原样还给 rest，
+// 否则 `review <file>` 之类的命令会在处理块里看到空参数、直接打用法退出。
+// 只还不以 '-' 开头的（`gc --dry` 这种 flags-first 的调法保持原样，别把选项名塞两遍）。
+if (!needsAgent && who !== undefined && who !== null && !String(who).startsWith('-')) rest.unshift(who);
 // 第一个词既不是已知 agent 也不是 auto → 它是 prompt 的开头，改走自动选路。
 if (needsAgent && who && who !== 'auto' && !REGISTRY[who]) { rest.unshift(who); who = 'auto'; }
 let agent = REGISTRY[who];

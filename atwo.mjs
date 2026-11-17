@@ -523,7 +523,7 @@ async function cmdGo(args) {
   const src = rest1.filter((a) => !a.startsWith('--'));
   // --agent 不透传：路数由档位决定。放行它会让「本次：N 路」这行打印与真实参数对不上，
   // 而用户唯一能核对的就是那行（PRD R6）。
-  const passThrough = rest1.filter((a) => a.startsWith('--') && !a.startsWith('--agent') && a !== '--plan' && a !== '--all-lanes');
+  const passThrough = rest1.filter((a) => a.startsWith('--') && !a.startsWith('--agent') && a !== '--plan' && a !== '--all-lanes' && a !== '--no-canary');
 
   const t = activeTask();
   if (!t && mode.name !== 'off') {
@@ -590,6 +590,30 @@ async function cmdGo(args) {
         lanes = pr.kept;
       }
     } catch { /* 账本读不到就照常派活，别让记账问题拦了干活 */ }
+  }
+
+  // 派活前探活（P0-C，2026-11-17）：不通的通道 1.5 秒内摘掉。
+  // 为什么值得：四路全死那天，每条 GUI 通道都要等满 15 秒 TTFB 才判死，
+  // 70 秒墙钟里有 45 秒是在「等一个开局就知道死了的通道」。
+  // 探活只证明客户端在、端口在听、CLI 文件在；不证明模型还在菜单里（那是 verifyModels 的事），
+  // 也不证明额度够（只有真发一次才知道）。
+  if (!rest1.includes('--no-canary') && lanes.length > 1) {
+    try {
+      const { canaryLanes, renderCanary } = await import('./lib/canary.mjs');
+      const ms = Number(process.env.ATWO_CANARY_MS || 0);
+      const c = await canaryLanes(lanes, ms > 0 ? { timeoutMs: ms } : {});
+      if (c.results.length) console.log(renderCanary(c));
+      const kept = c.kept.filter((a) => lanes.includes(a));
+      const dropped = lanes.filter((a) => !kept.includes(a));
+      if (kept.length && dropped.length) {
+        console.log('  · 本次不派：' + dropped.join('、') + '（探活不通，省下各自的 15 秒判死等待）');
+        lanes = kept;
+      }
+      RESULT.data.canary = { alive: c.alive, dead: c.dead.map((d) => d.agent), allDead: c.allDead };
+    } catch (e) {
+      // 探活自己坏掉不许拦住派活：这条路是优化，不是闸门
+      console.log('  · 探活跳过（' + (e instanceof Error ? e.message : String(e)) + '）');
+    }
   }
 
   const env = {};

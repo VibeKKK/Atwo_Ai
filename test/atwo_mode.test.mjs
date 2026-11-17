@@ -53,8 +53,11 @@ const j = fs.existsSync(MODE) ? JSON.parse(fs.readFileSync(MODE, 'utf8')) : {};
 ok('退出码 0', r.code === 0);
 ok('mode/since/by 齐全', j.mode === 'crazy' && !!j.since && !!j.by, JSON.stringify(j));
 
+// 探活（lib/canary.mjs）会按「端口在不在」把死通道从编队里摘掉，于是「配了几路」
+// 在这台机器上会随客户端开没开而变。档位测试要判的是**配置语义**，不是机器现状，
+// 所以两处四路断言一律加 --no-canary（关探活），把环境变量从断言里摘出去。
 console.log('A6  crazy 参数：四路 + 三评审 + 返工三轮');
-r = run(['go', PRD, '--plan']);
+r = run(['go', PRD, '--plan', '--no-canary']);
 const laneNames = ((r.out.match(/--agent (\S+)/) || [])[1] || '').split(',').filter(Boolean);
 ok('四路都在', ['codebuddy', 'trae', 'workbuddy', 'doubao'].every((n) => laneNames.includes(n)), laneNames.join(','));
 ok('多评审 = 3（--by-multi / --reviewers 同义，二者之一即可）', /--(?:by-multi|reviewers) 3/.test(r.out));
@@ -77,7 +80,7 @@ ok('带 --land --verify', /--land/.test(r.out) && /--verify/.test(r.out));
 ok('打印 1 路', claimedLanes(r.out) === 1, 'claimed=' + claimedLanes(r.out));
 
 console.log('A4b  --all-lanes 强制四路（M 档也能四路并派）');
-r = run(['go', PRD, '--plan', '--size', 'M', '--all-lanes']);
+r = run(['go', PRD, '--plan', '--size', 'M', '--all-lanes', '--no-canary']);
 const allLaneNames = ((r.out.match(/--agent (\S+)/) || [])[1] || '').split(',').filter(Boolean);
 ok('四路都在', ['codebuddy', 'trae', 'workbuddy', 'doubao'].every((n) => allLaneNames.includes(n)), allLaneNames.join(','));
 ok('打印 4 路', claimedLanes(r.out) === 4, 'claimed=' + claimedLanes(r.out));
