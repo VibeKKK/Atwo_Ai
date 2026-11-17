@@ -34,3 +34,10 @@ Managed by ATW. Edits outside this block are preserved; edits inside may be over
 其余：`doctor` 查通道可用性并给补齐办法；`try` 两秒自检内核是否活着；`caps --json` 拿全部动词与上限；`help <动词>` 看单个动词的全部参数。
 
 机器可读约定：任何动词加 `--json` 只出 `{ok,verb,exitCode,data,log}`；退出码 `0` 通过 / `2` 用法 / `3` 前置条件 / `4` 验收不过 / `5` 通道不可用 / `6` 预算超限。
+
+## 共享文件提交前逐段看（2026-11-17 事故后加）
+
+`atwo.mjs` / `lib/cli-spec.mjs` / `agents/*` / `orchestra.mjs` 是两个工作区都在改的共享文件。
+**禁止整文件 `git add <共享文件>`**（这是 `git add -A` 的同型变体）：提交前 `git diff <file>` 逐段确认只含自己的 hunk，
+别人的要么 `git add -p` 挑，要么先备份 + `git checkout -- <file>` 再打自己的补丁 + 把备份拷回。
+判据一句话：**如果对方今天回滚了他所有未提交改动，我这个提交还跑得起来吗？** 跑不起来就说明把他的东西带进来了。

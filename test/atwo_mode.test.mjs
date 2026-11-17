@@ -61,17 +61,25 @@ ok('--max-fix 3', /--max-fix 3/.test(r.out));
 ok('禁缓存 env', /ORCH_NO_CACHE/.test(r.out));
 ok('打印路数 = 5? 不对就说明打印与参数不一致', claimedLanes(r.out) === 4, 'claimed=' + claimedLanes(r.out));
 
-console.log('A4  strict + M：两路一评');
+console.log('A4  strict + M：单路一评');
 run(['mode', 'strict']);
 // 必须显式 --size M：不传时尺寸取自 activeTask()，也就是「当前哪个任务在跑」——
 // 2026-11-16 实测被这个坑到：新任务标了 L，A4 立刻按 4 路 + --by-multi 2 跑，
 // 两条断言全红，看起来像档位坏了，其实是测试依赖了运行环境的当前任务。
+// 2026-11-17：SIZE_PLAN.M 从 ['codebuddy','trae'] 改成 ['codebuddy']（trae 常空产出，评审另由
+// probeReviewers 挑），所以这里断言单路；四路并派要显式 --all-lanes（A4b 覆盖）。
 r = run(['go', PRD, '--plan', '--size', 'M']);
-ok('--agent codebuddy,trae', /--agent codebuddy,trae/.test(r.out), r.out.slice(0, 300));
+ok('--agent codebuddy', /--agent codebuddy(\s|$)/.test(r.out), r.out.slice(0, 300));
 ok('带 --review', /--review/.test(r.out));
 ok('不带 --by-multi（单评审）', !/--by-multi/.test(r.out));
 ok('带 --land --verify', /--land/.test(r.out) && /--verify/.test(r.out));
-ok('打印 2 路', claimedLanes(r.out) === 2, 'claimed=' + claimedLanes(r.out));
+ok('打印 1 路', claimedLanes(r.out) === 1, 'claimed=' + claimedLanes(r.out));
+
+console.log('A4b  --all-lanes 强制四路（M 档也能四路并派）');
+r = run(['go', PRD, '--plan', '--size', 'M', '--all-lanes']);
+const allLaneNames = ((r.out.match(/--agent (\S+)/) || [])[1] || '').split(',').filter(Boolean);
+ok('四路都在', ['codebuddy', 'trae', 'workbuddy', 'doubao'].every((n) => allLaneNames.includes(n)), allLaneNames.join(','));
+ok('打印 4 路', claimedLanes(r.out) === 4, 'claimed=' + claimedLanes(r.out));
 
 console.log('A5  strict + S：单路不评');
 r = run(['go', PRD, '--plan', '--size', 'S']);
