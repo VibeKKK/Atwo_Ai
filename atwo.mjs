@@ -41,6 +41,8 @@ import { lanesSnapshot, renderLanes } from './lib/lanesnap.mjs';
 import { makeBoardVerb } from './lib/board-cli.mjs';
 import { readHealthFromLog, renderHealth } from './lib/lane-health.mjs';
 import { makeTailVerb, makeStopVerb } from './lib/runs-cli.mjs';
+import { collectSelfcheck, renderSelfcheck } from './lib/selfcheck.mjs';
+import { graphAge, renderGraphAge } from './lib/graph-age.mjs';
 import { installHooks, hookStatus, removeHooks, formatHookStatus, formatInstall } from './lib/hooks.mjs';
 import { VERBS, GLOBAL_FLAGS, EXIT_CODES, LIMITS, isHelp, checkFlags, positional, specOf, formatSpec, capsJson, valueFlagsOf } from './lib/cli-spec.mjs';
 import { detectEnvironment, quickSelfCheck } from './lib/bootstrap.mjs';
@@ -535,6 +537,13 @@ async function cmdGo(args) {
   if (pitfallHits.length > 0) {
     for (const line of renderPitfalls(pitfallHits)) console.log(line);
     RESULT.data.pitfalls = pitfallHits.map((r) => r.trigger);
+  }
+  // 图龄：六处融合里有三处读不到图会静默退回旧行为（切分不吃依赖、父审没有波及面、验收不跑测试）。
+  // 只提示不阻断 —— 图过期不该拦住一次小修，但必须让人知道「现在眼睛是闭着的」。
+  const gAge = (() => { try { return graphAge(HERE); } catch { return null; } })();
+  if (gAge && (gAge.stale || !gAge.exists)) {
+    console.log('⚠ ' + renderGraphAge(gAge));
+    RESULT.data.graph = { exists: gAge.exists, stale: gAge.stale, reason: gAge.reason };
   }
   const src = rest1.filter((a) => !a.startsWith('--'));
   // --agent 不透传：路数由档位决定。放行它会让「本次：N 路」这行打印与真实参数对不上，
@@ -1720,6 +1729,21 @@ function cmdModels(args = []) {
 }
 
 const cmdBoard = makeBoardVerb({ cwd: HERE, EXIT });
+// selfcheck：一条命令答「它现在能不能干活」。五项真读盘，只数测试文件不跑测试。
+const cmdSelfcheck = (args = [], RESULT = { data: {} }) => {
+  const s = collectSelfcheck(HERE);
+  RESULT.data.selfcheck = {
+    ok: s.ok,
+    verbs: s.verbs.length,
+    tests: s.tests,
+    graph: { exists: s.graph.exists, stale: s.graph.stale, ageMs: s.graph.ageMs, reason: s.graph.reason },
+    usable: s.usable,
+    ledger: { ok: s.ledger.ok, entries: s.ledger.entries, lastTs: s.ledger.lastTs },
+    budget: { ok: s.budget.ok, missing: !!s.budget.missing },
+  };
+  console.log(renderSelfcheck(s));
+  return s.ok ? EXIT.ok : EXIT.precondition;
+};
 const cmdTail = makeTailVerb({ cwd: HERE, EXIT });
 const cmdStop = makeStopVerb({ cwd: HERE, EXIT });
 
@@ -1729,7 +1753,7 @@ function cmdSnapshot() {
   RESULT.data.snapshot = snap;
   return EXIT.ok;
 }
-const table = { doctor: cmdDoctor, queue: cmdQueue, cost: cmdCost, pool: cmdPool, review: cmdReview, should: cmdShould, gate: cmdGate, hooks: cmdHooks, try: cmdTry, new: cmdNew, batch: cmdBatch, go: cmdGo, check: cmdCheck, diff: cmdDiff, judge: cmdJudge, attest: cmdAttest, models: cmdModels, snapshot: cmdSnapshot, board: cmdBoard, health: cmdHealth, tail: cmdTail, stop: cmdStop, score: cmdScore, pitfall: cmdPitfall, army: cmdArmy, triage: cmdTriage, blind: cmdBlind, fanout: cmdFanout, patch: cmdPatch, drain: cmdDrain, edit: cmdEdit, stage: cmdStage, done: cmdDone, state: cmdState, mode: cmdMode, raw: cmdRaw };
+const table = { doctor: cmdDoctor, queue: cmdQueue, cost: cmdCost, pool: cmdPool, review: cmdReview, should: cmdShould, gate: cmdGate, hooks: cmdHooks, try: cmdTry, new: cmdNew, batch: cmdBatch, go: cmdGo, check: cmdCheck, diff: cmdDiff, judge: cmdJudge, attest: cmdAttest, models: cmdModels, snapshot: cmdSnapshot, board: cmdBoard, selfcheck: cmdSelfcheck, health: cmdHealth, tail: cmdTail, stop: cmdStop, score: cmdScore, pitfall: cmdPitfall, army: cmdArmy, triage: cmdTriage, blind: cmdBlind, fanout: cmdFanout, patch: cmdPatch, drain: cmdDrain, edit: cmdEdit, stage: cmdStage, done: cmdDone, state: cmdState, mode: cmdMode, raw: cmdRaw };
 
 /** 打印规格：人读走 stdout，机器读塞进 RESULT.data（由统一收尾出 JSON）。 */
 function printSpec(target) {
