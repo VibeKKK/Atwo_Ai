@@ -87,3 +87,9 @@ _mk_baseline.mjs
 
 # graft 的图库（本地产物，不进版本库）
 .graft/
+# graft 工具源码（外部参考，仓库只读 .graft/graft.db）
+graft/
+
+# 污染探针与临时盲测子集
+lib/zz_probe_*.mjs
+eval/blind-tmp.json
