@@ -69,13 +69,18 @@ node atwo.mjs gate --no-tests   # 约 12s
 ## 60 秒上手
 
 ```bash
+py -3 .atw/scripts/init_developer.py <你的名字>   # 只做一次；不建它，new 会报 No developer set
+
 node atwo.mjs doctor              # 环境体检：通道、端口、可执行文件
 node atwo.mjs try                 # 两秒自检：闭包 + 判定 + 编队上限，三条断言
 node atwo.mjs caps --json         # 全部动词 + 参数 + 退出码 + 上限，一屏 JSON
 
+node atwo.mjs new "冒烟：确认能建任务"   # 第一次写盘；这三条全绿也不代表它能用
 node atwo.mjs should "把 lib 下 12 个模块各补一组边界用例"   # 该派还是自己干（零成本）
 node atwo.mjs state               # 当前任务 / 其他打开的任务 / 负载
 ```
+
+前三条都是「读」，`new` 是第一次「写」—— 全新 clone 卡住的地方往往就在这里。完整步骤见 [SETUP.md](SETUP.md)。
 
 退出码是契约，不是装饰：`0` 成功 · `2` 用法错 · `3` 前置不满足 · `4` 验收红 · `5` 通道拿不到 · `6` 预算。**4 表示「跑成了但结论是红」**，不是环境坏。
 
@@ -91,7 +96,7 @@ node atwo.mjs state               # 当前任务 / 其他打开的任务 / 负�
 | 长尾切分 | 1.2–1.4× | 8 文件 53s → `--split 4` 38s；但「一条命令能扫完」的活切了反而慢（0.60×） |
 | 父审固定成本 | 约 50s 地板 | 单片父审不随内容变；所以省时间靠流水线重叠，不靠切得更碎 |
 | 闸门 | 九步 12s / 带测试约 50s | `gate --no-tests` 与 `gate` |
-| 测试 | **110 / 110 · 231s** | 干净检出（`git worktree add --detach HEAD`）跑全量 |
+| 测试 | **130 / 130 · 92s** | 干净检出（`git worktree add --detach HEAD`）跑全量；有负载时会假红，runner 会复跑判定 |
 
 ---
 
@@ -134,7 +139,7 @@ orch top                  # 吞吐看板：每批墙钟 vs 串行、提速比
 ## 文件结构
 
 ```text
-atwo.mjs                任务编排 CLI 入口（28 个动词）
+atwo.mjs                任务编排 CLI 入口（35 个动词）
 lib/cli-spec.mjs        动词 / 参数 / 退出码的单一真源
 lib/fanout*.mjs         派活 → 闸门 → 父审 → 自愈
 lib/army*.mjs           三三制阵型（侦察 / 主力 / 评审）
@@ -145,14 +150,14 @@ lib/blind*.mjs          盲测与客观标签器
 vm/                     三值字节码机、判定服务、双实现对拍
 agents/                 各通道适配（codebuddy / trae / workbuddy / ollama / deepseek）
 orchestra.mjs           多通道派活引擎（swarm / ask / health / stats）
-test/                  99 个测试文件 · 一条命令跑 110 项（发现式入口）
+test/                  131 个测试文件 · 一条命令跑 130 项（发现式入口）
 docs/decisions/         每处设计为什么这么定（30+ 篇）
 ```
 
 ## 测试
 
 ```bash
-node test/all.mjs        # 全部：约 231s，失败会单跑复验一次（区分假红与真红）
+node test/all.mjs        # 全部：约 92s，失败会单跑复验一次（区分假红与真红）
 node test/all.mjs --dir test   # 只跑某个目录
 npm test                 # = node test/all.mjs
 ```

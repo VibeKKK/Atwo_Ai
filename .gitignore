@@ -83,3 +83,9 @@ memory/.wb-targets.json
 eval/blind-objective.json
 _append_shared.mjs
 _mk_baseline.mjs
+
+# ── adhoc 分歧清单（2026-11-18）────────────────────────────────────
+# `atwo diff` 不给 --out 时，人话版落 docs/decisions/<slug>-<日期>.md。
+# 没有活跃任务时 slug 就是 adhoc，于是每跑一次测试就往源码树里丢一个未跟踪文件。
+# 有任务的 <taskid>-<日期>.md 是真决策记录，要进库；只有 adhoc-* 是临时产物。
+docs/decisions/adhoc-*.md

@@ -59,6 +59,14 @@ const probeMd = path.join(ROOT, '_probe', 'decisions.md');
 const backup = new Map();
 for (const p of [probeJson, probeMd]) if (fs.existsSync(p)) backup.set(p, fs.readFileSync(p));
 
+// 人话版默认落 docs/decisions/<slug>-<日期>.md —— 那是**源码目录**，不是 _probe。
+// 不给 --out 跑一次就会在里面留一个未跟踪的 adhoc-YYYY-MM-DD.md，会被误提交。
+// 先记下跑之前的 .md 清单，跑完只删新增的（已有的绝不动）。
+const humanDirAbs = path.join(ROOT, 'docs', 'decisions');
+const humanBefore = new Set(
+  fs.existsSync(humanDirAbs) ? fs.readdirSync(humanDirAbs).filter((f) => f.endsWith('.md')) : [],
+);
+
 const r2 = spawnSync(process.execPath, [ATWO, 'diff', FIX], { cwd: ROOT, encoding: 'utf8' });
 ok('不给 --out 时也成功', r2.status === 0, r2.status);
 ok('不给 --out 时默认落 _probe', /_probe\/decisions\.(json|md)/.test(r2.stdout || ''), (r2.stdout || '').slice(-200));
@@ -66,6 +74,12 @@ ok('不给 --out 时默认落 _probe', /_probe\/decisions\.(json|md)/.test(r2.st
 for (const p of [probeJson, probeMd]) {
   if (backup.has(p)) fs.writeFileSync(p, backup.get(p));
   else fs.rmSync(p, { force: true });
+}
+// 人话版也还原：只删这次新冒出来的，别人手写的决策记录不动。
+if (fs.existsSync(humanDirAbs)) {
+  for (const f of fs.readdirSync(humanDirAbs)) {
+    if (f.endsWith('.md') && !humanBefore.has(f)) fs.rmSync(path.join(humanDirAbs, f), { force: true });
+  }
 }
 
 // 参数解析：--out 的值不能被当成用例文件
