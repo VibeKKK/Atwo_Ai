@@ -59,21 +59,26 @@ const probeMd = path.join(ROOT, '_probe', 'decisions.md');
 const backup = new Map();
 for (const p of [probeJson, probeMd]) if (fs.existsSync(p)) backup.set(p, fs.readFileSync(p));
 
-// 人话版默认进 docs/decisions/（那是要进 git 的目录）—— 跑测必须自己收拾干净，
-// 否则一次全量跑就往仓库里塞一个 adhoc-<日期>.md（2026-11-18 干净检出抓到的真污染）。
-const humanDir = path.join(ROOT, 'docs', 'decisions');
-const humanBefore = new Set(fs.existsSync(humanDir) ? fs.readdirSync(humanDir) : []);
+// 人话版默认落 docs/decisions/<slug>-<日期>.md —— 那是**源码目录**，不是 _probe。
+// slug 可能来自活跃任务（实测是 atwo-io8xnw-<日期>.md，不是 adhoc-*），所以跑测必须：
+// 先记下 .md 清单，跑完只删本次新增的（别人手写的决策记录一篇不动）。
+const humanDirAbs = path.join(ROOT, 'docs', 'decisions');
+const humanBefore = new Set(
+  fs.existsSync(humanDirAbs) ? fs.readdirSync(humanDirAbs).filter((f) => f.endsWith('.md')) : [],
+);
 const r2 = spawnSync(process.execPath, [ATWO, 'diff', FIX], { cwd: ROOT, encoding: 'utf8' });
 ok('不给 --out 时也成功', r2.status === 0, r2.status);
 ok('不给 --out 时默认落 _probe', /_probe\/decisions\.(json|md)/.test(r2.stdout || ''), (r2.stdout || '').slice(-200));
 ok('人话版默认进 docs/decisions（要进 git 的东西不能只停在屏幕上）', /docs[\/\\]decisions[\/\\]/.test(r2.stdout || ''), (r2.stdout || '').slice(-200));
-for (const f of (fs.existsSync(humanDir) ? fs.readdirSync(humanDir) : [])) {
-  if (!humanBefore.has(f)) fs.rmSync(path.join(humanDir, f), { force: true });
-}
-
 for (const p of [probeJson, probeMd]) {
   if (backup.has(p)) fs.writeFileSync(p, backup.get(p));
   else fs.rmSync(p, { force: true });
+}
+// 人话版也还原：只删这次新冒出来的，别人手写的决策记录不动。
+if (fs.existsSync(humanDirAbs)) {
+  for (const f of fs.readdirSync(humanDirAbs)) {
+    if (f.endsWith('.md') && !humanBefore.has(f)) fs.rmSync(path.join(humanDirAbs, f), { force: true });
+  }
 }
 
 // 参数解析：--out 的值不能被当成用例文件

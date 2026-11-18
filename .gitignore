@@ -93,3 +93,9 @@ graft/
 # 污染探针与临时盲测子集
 lib/zz_probe_*.mjs
 eval/blind-tmp.json
+
+# ── adhoc 分歧清单（PR #1 提出，2026-11-18）────────────────────────
+# `atwo diff` 不给 --out 时人话版写 docs/decisions/<slug>-<日期>.md。
+# 实测 slug 来自活跃任务，抓到的是 atwo-io8xnw-<日期>.md 这种形态 —— 所以下面这条
+# 只在「没有活跃任务」时兜得住。常态靠 test/atwo_diff_land.test.mjs 自己收拾干净。
+docs/decisions/adhoc-*.md
