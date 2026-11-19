@@ -60,24 +60,47 @@ const backup = new Map();
 for (const p of [probeJson, probeMd]) if (fs.existsSync(p)) backup.set(p, fs.readFileSync(p));
 
 // 人话版默认落 docs/decisions/<slug>-<日期>.md —— 那是**源码目录**，不是 _probe。
-// slug 可能来自活跃任务（实测是 atwo-io8xnw-<日期>.md，不是 adhoc-*），所以跑测必须：
-// 先记下 .md 清单，跑完只删本次新增的（别人手写的决策记录一篇不动）。
+// slug 来自 activeTask()，而活跃任务**可能是个僵尸**：done_gate.test.mjs 建的任务若在
+// 「建完、删之前」被打断，会以 status=implement 一直留在 .atw/tasks 里 → 之后每次跑测
+// diff 都往 docs/decisions/ 写 <那个任务id>-<日期>.md。实测抓到过
+// tmp-done-gate-g-2026-11-19.md（来源 fixtures/div_sample.mjs），而 .gitignore 里那条
+// docs/decisions/adhoc-*.md 完全拦不住它 —— 命名规则型忽略只要名字能变就漏。
+//
+// 所以这里给子进程指一个**空的** ATWO_TASKS_DIR：没有活跃任务，slug 恒为 adhoc，
+// 产物名可预测且被 .gitignore 覆盖（万一被打断也不会留污染）。
 const humanDirAbs = path.join(ROOT, 'docs', 'decisions');
 const humanBefore = new Set(
   fs.existsSync(humanDirAbs) ? fs.readdirSync(humanDirAbs).filter((f) => f.endsWith('.md')) : [],
 );
-const r2 = spawnSync(process.execPath, [ATWO, 'diff', FIX], { cwd: ROOT, encoding: 'utf8' });
+const emptyTasks = fs.mkdtempSync(path.join(os.tmpdir(), 'atwo-diff-tasks-'));
+const r2 = spawnSync(process.execPath, [ATWO, 'diff', FIX], {
+  cwd: ROOT, encoding: 'utf8', env: { ...process.env, ATWO_TASKS_DIR: emptyTasks },
+});
 ok('不给 --out 时也成功', r2.status === 0, r2.status);
 ok('不给 --out 时默认落 _probe', /_probe\/decisions\.(json|md)/.test(r2.stdout || ''), (r2.stdout || '').slice(-200));
 ok('人话版默认进 docs/decisions（要进 git 的东西不能只停在屏幕上）', /docs[\/\\]decisions[\/\\]/.test(r2.stdout || ''), (r2.stdout || '').slice(-200));
+
+// 名字必须是 adhoc-<日期>.md：只要哪天有人把 slug 改回 activeTask()，这条立刻红。
+const today = (() => {
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+})();
+const expectName = 'adhoc-' + today + '.md';
+ok('无活跃任务时产物名是 adhoc-<日期>.md（.gitignore 拦得住）',
+  /docs[\/\\]decisions[\/\\]adhoc-/.test(r2.stdout || ''), (r2.stdout || '').slice(-200));
+// 精确删这一个：别人手写的决策记录一篇不动。
+fs.rmSync(path.join(humanDirAbs, expectName), { force: true });
+fs.rmSync(emptyTasks, { recursive: true, force: true });
 for (const p of [probeJson, probeMd]) {
   if (backup.has(p)) fs.writeFileSync(p, backup.get(p));
   else fs.rmSync(p, { force: true });
 }
-// 人话版也还原：只删这次新冒出来的，别人手写的决策记录不动。
+// 兜底：万一 slug 将来又变成别的，只删**本次新增且带 adhoc- 前缀**的，别人手写的决策记录一篇不动。
 if (fs.existsSync(humanDirAbs)) {
   for (const f of fs.readdirSync(humanDirAbs)) {
-    if (f.endsWith('.md') && !humanBefore.has(f)) fs.rmSync(path.join(humanDirAbs, f), { force: true });
+    if (f.endsWith('.md') && f.startsWith('adhoc-') && !humanBefore.has(f)) {
+      fs.rmSync(path.join(humanDirAbs, f), { force: true });
+    }
   }
 }
 

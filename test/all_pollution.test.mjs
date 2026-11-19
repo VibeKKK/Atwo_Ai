@@ -1,5 +1,5 @@
 /**
- * 跑测器的工作区污染检测（test/all.mjs 的 --strict）。
+ * 跑测器的工作区污染检测（test/all.mjs，默认判失败，--no-strict 降级）。
  *
  * 为什么要有：测试往真实仓库写文件（曾把 lib/p01_probe.mjs 写进仓库根），
  * 后果不是「多一个文件」，是「本机全绿、干净 clone 红」与并发互踩 ——
@@ -7,8 +7,9 @@
  *
  * 这里造一个**故意污染**的假测试与一个**干净**的假测试，断言：
  *   1. 干净时没有污染行；
- *   2. 污染时报告出来，但默认不算失败（别人同时在改工作区不能冤枉测试）；
- *   3. --strict 时才算失败。
+ *   2. 污染时**默认就判失败**（2026-11-19 改：原来默认只报告，实测结果是被报告了
+ *      但退出码 0，污染就一直躺在仓库里 —— 报告没人看等于没报）；
+ *   3. --no-strict 时降级为只报告、退出码 0（别人同时在改工作区时的退路）。
  */
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -68,13 +69,13 @@ try {
   const b = run(dir, [], { POLLUTE_TARGET: target });
   ok('污染被报告出来', /工作区污染/.test(b.out), b.out.slice(-300));
   ok('报告里点名了那个文件', b.out.includes(path.basename(target)), b.out.slice(-300));
-  ok('默认只报告、不算失败', b.code === 0, String(b.code) + ' / ' + b.out.slice(-120));
-  ok('摘要里标了（仅报告）', /污染 1（仅报告）/.test(b.out), b.out.slice(-160));
+  ok('默认就判失败（退出码 1）', b.code === 1, String(b.code) + ' / ' + b.out.slice(-120));
+  ok('摘要里标了（算失败）', /污染 1（算失败）/.test(b.out), b.out.slice(-160));
 
   fs.rmSync(target, { force: true });
-  const c = run(dir, ['--strict'], { POLLUTE_TARGET: target });
-  ok('--strict 时算失败（退出码 1）', c.code === 1, String(c.code));
-  ok('--strict 摘要里标了（算失败）', /污染 1（算失败）/.test(c.out), c.out.slice(-160));
+  const c = run(dir, ['--no-strict'], { POLLUTE_TARGET: target });
+  ok('--no-strict 降级为只报告（退出码 0）', c.code === 0, String(c.code));
+  ok('--no-strict 摘要里标了（仅报告）', /污染 1（仅报告）/.test(c.out), c.out.slice(-160));
 } finally {
   fs.rmSync(target, { force: true });
   fs.rmSync(dir, { recursive: true, force: true });
