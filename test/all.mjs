@@ -12,7 +12,8 @@
  *   node test/all.mjs --dir <目录>        # 跑另一个目录（自测用）
  *   node test/all.mjs --quiet             # 只打失败的
  *   TEST_NO_RETRY=1 node test/all.mjs     # 关掉复跑（CI 想严格时用）
- *   node test/all.mjs --strict            # 跑测期间往真实仓库写文件也算失败（收工/CI 用）
+ *   node test/all.mjs --no-strict         # 降级：跑测期间新增文件只报告不判失败
+ *                                          （默认**判失败**；别人同时在改工作区时才用它）
  *
  * 三态而不是两态（2026-11-16 改）：
  *   - ✓ 通过
@@ -97,7 +98,15 @@ function runOnce(f) {
 
 // 跑测前后的工作区快照：测试写到真实仓库里 = 污染。
 // 判据是**新增**（跑完多出来的路径），不是差异总量 —— 别人同时在改工作区不会冤枉测试。
-// 默认只报告；--strict 才把它算失败（CI 或收工前用）。
+//
+// 2026-11-19 改：**默认就判失败**，--no-strict 才降级成只报告。
+// 原来默认「仅报告」的后果是实测过的：作者自己的机器上跑出
+// `✓ 通过 145 / 145 · 污染 1（仅报告）`，退出码 0 —— 检测逻辑是对的，
+// 没接线到失败判定，污染就一直存在（docs/decisions/ 积了多个非常规命名的文件）。
+// 报告没人看等于没报。
+//
+// 保留的退路：别人同时在改工作区时，新增文件未必是测试写的 ——
+// 这层用 --no-strict 手动降级，而不是让默认值替所有人决定「不用管」。
 function gitSnapshot() {
   const r = spawnSync('git', ['status', '--porcelain', '-z'], { cwd: ROOT, encoding: 'utf8' });
   if (r.status !== 0) return null;
@@ -107,7 +116,7 @@ function gitSnapshot() {
   }
   return map;
 }
-const strict = argv.includes('--strict');
+const strict = !argv.includes('--no-strict');
 const snapBefore = gitSnapshot();
 const t = (ms) => (ms / 1000).toFixed(1) + 's';
 const startedAll = Date.now();
@@ -174,7 +183,7 @@ if (polluted.length) {
   console.log('\n──── 工作区污染（跑测期间新出现；测试该写到临时目录/被忽略路径）────');
   for (const x of polluted.slice(0, 20)) console.log('  + ' + x);
   if (polluted.length > 20) console.log('  … 另有 ' + (polluted.length - 20) + ' 条');
-  if (strict) console.log('  （--strict：算失败）');
+  if (strict) console.log('  （算失败；确实要放过用 --no-strict）');
 }
 if (touched.length) {
   // 不判死：别人（或我自己）可能正在同一个工作区里改文件，跑测期间 mtime/状态变了。
